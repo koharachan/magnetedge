@@ -50,12 +50,12 @@ async fn main() -> Result<()> {
     let provider = Provider::<Http>::try_from(rpc_url)?;
     
     // 输入私钥并创建钱包
-    let wallet = input_private_key(provider.clone()).await?;
+    let wallet = input_private_key(provider).await?;
     let wallet_address = wallet.address();
     println!("{}", format!("钱包地址 / Wallet address: {}", wallet_address).green());
 
     // 检查钱包余额
-    let balance = check_wallet_balance(&wallet).await?;
+    let _balance = check_wallet_balance(&wallet).await?;
     
     // 初始化合约
     let contract = init_contract(wallet).await?;
@@ -97,7 +97,7 @@ fn select_rpc_node() -> Result<&'static str> {
     Ok(RPC_OPTIONS[selection])
 }
 
-async fn input_private_key<P: JsonRpcClient + 'static>(provider: Provider<P>) -> Result<SignerMiddleware<Provider<P>, LocalWallet>> {
+async fn input_private_key<P: JsonRpcClient + 'static + Clone>(provider: Provider<P>) -> Result<SignerMiddleware<Provider<P>, LocalWallet>> {
     let max_attempts = 3;
     let mut attempts = 0;
     
@@ -222,7 +222,6 @@ async fn mine_once<M: Middleware + 'static>(
     
     let tx = contract
         .request_mining_task()
-        .gas_price(None)
         .send()
         .await?
         .await?
@@ -289,7 +288,6 @@ async fn mine_once<M: Middleware + 'static>(
     
     let submit_tx = contract
         .submit_mining_result(solution)
-        .gas_price(None)
         .send()
         .await?
         .await?
@@ -328,7 +326,7 @@ async fn mine_solution(nonce: U256, address: Address, difficulty: U256) -> Resul
     let start_time = Instant::now();
     
     // 设置进度条
-    let pb = ProgressBar::new_spinner();
+    let pb = Arc::new(ProgressBar::new_spinner());
     pb.set_style(
         ProgressStyle::default_spinner()
             .template("{spinner:.green} {msg}")
@@ -361,7 +359,6 @@ async fn mine_solution(nonce: U256, address: Address, difficulty: U256) -> Resul
             while !solution_found.load(Ordering::Relaxed) {
                 let encoded = encode_packed(&[Token::Bytes(prefix.clone()), Token::Uint(solution)])?;
                 let hash = keccak256(encoded);
-                let hash_value = U256::from(hash.as_ref());
                 total_hashes.fetch_add(1, Ordering::Relaxed);
                 
                 // 检查哈希值是否满足难度要求
@@ -389,13 +386,14 @@ async fn mine_solution(nonce: U256, address: Address, difficulty: U256) -> Resul
     // 更新进度
     let total_hashes_clone = total_hashes.clone();
     let solution_found_clone = solution_found.clone();
+    let pb_clone = pb.clone();
     tokio::spawn(async move {
         while !solution_found_clone.load(Ordering::Relaxed) {
             let elapsed = start_time.elapsed().as_secs_f64();
             let hash_count = total_hashes_clone.load(Ordering::Relaxed);
             let hash_rate = hash_count as f64 / elapsed;
             
-            pb.set_message(format!(
+            pb_clone.set_message(format!(
                 "哈希次数 / Hashes: {}, 哈希速度 / Hash rate: {:.2} H/s",
                 hash_count, hash_rate
             ));
