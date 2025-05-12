@@ -115,6 +115,4 @@ abigen!(
             "type": "function"
         }
     ]"#,
-);
-
-pub use mining_contract::*; 
+); 

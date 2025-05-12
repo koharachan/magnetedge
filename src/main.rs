@@ -5,6 +5,7 @@ use ethers::{
     prelude::*,
     providers::{Http, Provider},
     utils::keccak256,
+    abi::Token,
 };
 use futures::future::join_all;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -22,7 +23,7 @@ use tokio::time::sleep;
 
 mod contract;
 
-use contract::mining_contract;
+use contract::MiningContract;
 
 // 定义常量
 const CONTRACT_ADDRESS: &str = "0x51e0ab7f7db4a2bf4500dfa59f7a4957afc8c02e";
@@ -49,7 +50,7 @@ async fn main() -> Result<()> {
     let provider = Provider::<Http>::try_from(rpc_url)?;
     
     // 输入私钥并创建钱包
-    let wallet = input_private_key(&provider).await?;
+    let wallet = input_private_key(provider.clone()).await?;
     let wallet_address = wallet.address();
     println!("{}", format!("钱包地址 / Wallet address: {}", wallet_address).green());
 
@@ -96,7 +97,7 @@ fn select_rpc_node() -> Result<&'static str> {
     Ok(RPC_OPTIONS[selection])
 }
 
-async fn input_private_key<P: JsonRpcClient + 'static>(provider: &Provider<P>) -> Result<SignerMiddleware<Provider<P>, LocalWallet>> {
+async fn input_private_key<P: JsonRpcClient + 'static>(provider: Provider<P>) -> Result<SignerMiddleware<Provider<P>, LocalWallet>> {
     let max_attempts = 3;
     let mut attempts = 0;
     
@@ -166,13 +167,13 @@ async fn check_wallet_balance<M: Middleware + 'static>(wallet: &SignerMiddleware
 
 async fn init_contract<M: Middleware + 'static>(
     wallet: SignerMiddleware<M, LocalWallet>,
-) -> Result<mining_contract<SignerMiddleware<M, LocalWallet>>> {
+) -> Result<MiningContract<SignerMiddleware<M, LocalWallet>>> {
     let contract_address = CONTRACT_ADDRESS.parse::<Address>()?;
-    let contract = mining_contract::new(contract_address, Arc::new(wallet));
+    let contract = MiningContract::new(contract_address, Arc::new(wallet));
     Ok(contract)
 }
 
-async fn check_contract_balance<M: Middleware + 'static>(contract: &mining_contract<M>) -> Result<U256> {
+async fn check_contract_balance<M: Middleware + 'static>(contract: &MiningContract<M>) -> Result<U256> {
     let contract_balance = contract.get_contract_balance().call().await?;
     println!(
         "{}",
@@ -197,7 +198,7 @@ async fn check_contract_balance<M: Middleware + 'static>(contract: &mining_contr
 }
 
 async fn start_mining_loop<M: Middleware + 'static>(
-    contract: mining_contract<SignerMiddleware<M, LocalWallet>>,
+    contract: MiningContract<SignerMiddleware<M, LocalWallet>>,
 ) -> Result<()> {
     let mut retry_count = 0;
     
@@ -214,7 +215,7 @@ async fn start_mining_loop<M: Middleware + 'static>(
 }
 
 async fn mine_once<M: Middleware + 'static>(
-    contract: &mining_contract<SignerMiddleware<M, LocalWallet>>,
+    contract: &MiningContract<SignerMiddleware<M, LocalWallet>>,
 ) -> Result<()> {
     // 请求新任务
     println!("{}", "请求新挖矿任务 / Requesting new mining task...".cyan());
