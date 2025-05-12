@@ -241,7 +241,8 @@ async fn mine_once<M: Middleware + 'static>(
     // 估算gas限制
     let gas_limit = match contract.request_mining_task().estimate_gas().await {
         Ok(limit) => {
-            let adjusted_limit = limit.saturating_mul(110).div(100); // 增加10%余量
+            // 增加10%余量 (limit * 110 / 100)
+            let adjusted_limit = limit.saturating_mul(U256::from(110)) / U256::from(100);
             println!("{}", format!("估算gas限制: {}, 调整后: {}", limit, adjusted_limit).green());
             adjusted_limit
         },
@@ -266,18 +267,12 @@ async fn mine_once<M: Middleware + 'static>(
                 Ok(None) => return Err(anyhow!("交易没有收据 / Transaction has no receipt")),
                 Err(e) => {
                     let err_msg = format!("交易确认失败 / Transaction confirmation failed: {:?}", e);
-                    if let Some(contract_err) = e.as_contract_error() {
-                        return Err(anyhow!("合约错误 / Contract error: {}", contract_err));
-                    }
                     return Err(anyhow!(err_msg));
                 }
             }
         },
         Err(e) => {
             let err_msg = format!("交易发送失败 / Transaction send failed: {:?}", e);
-            if let Some(contract_err) = e.as_contract_error() {
-                return Err(anyhow!("合约错误 / Contract error: {}", contract_err));
-            }
             return Err(anyhow!(err_msg));
         }
     };
@@ -356,7 +351,8 @@ async fn mine_once<M: Middleware + 'static>(
     // 估算提交解决方案的gas限制
     let submit_gas_limit = match contract.submit_mining_result(solution).estimate_gas().await {
         Ok(limit) => {
-            let adjusted_limit = limit.saturating_mul(110).div(100); // 增加10%余量
+            // 增加10%余量 (limit * 110 / 100)
+            let adjusted_limit = limit.saturating_mul(U256::from(110)) / U256::from(100);
             println!("{}", format!("估算提交gas限制: {}, 调整后: {}", limit, adjusted_limit).green());
             adjusted_limit
         },
@@ -381,18 +377,12 @@ async fn mine_once<M: Middleware + 'static>(
                 Ok(None) => return Err(anyhow!("提交交易没有收据 / Submission transaction has no receipt")),
                 Err(e) => {
                     let err_msg = format!("提交交易确认失败 / Submission confirmation failed: {:?}", e);
-                    if let Some(contract_err) = e.as_contract_error() {
-                        return Err(anyhow!("提交合约错误 / Submission contract error: {}", contract_err));
-                    }
                     return Err(anyhow!(err_msg));
                 }
             }
         },
         Err(e) => {
             let err_msg = format!("提交交易发送失败 / Submission transaction send failed: {:?}", e);
-            if let Some(contract_err) = e.as_contract_error() {
-                return Err(anyhow!("提交合约错误 / Submission contract error: {}", contract_err));
-            }
             return Err(anyhow!(err_msg));
         }
     };
