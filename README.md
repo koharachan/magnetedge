@@ -18,7 +18,7 @@ Magnet POW区块链挖矿客户端的Rust实现，性能更优，资源占用更
 
 ### 直接下载预编译版本
 
-1. 前往[Releases页面](https://github.com/你的用户名/POW-Client-Rust/releases)
+1. 前往[Releases页面](https://github.com/hotianbexuanto/POW-Client-Rust/releases)
 2. 下载适合您操作系统的最新版本
 3. 解压后直接运行可执行文件
 
@@ -26,7 +26,7 @@ Magnet POW区块链挖矿客户端的Rust实现，性能更优，资源占用更
 
 ```bash
 # 克隆仓库
-git clone https://github.com/你的用户名/POW-Client-Rust.git
+git clone https://github.com/hotianbexuanto/POW-Client-Rust.git
 cd POW-Client-Rust
 
 # 编译发布版本
