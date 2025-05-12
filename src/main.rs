@@ -228,8 +228,9 @@ async fn check_contract_balance<M: Middleware + 'static>(contract: &MiningContra
 async fn start_mining_loop<M: Middleware + 'static>(
     contract: MiningContract<SignerMiddleware<M, LocalWallet>>,
 ) -> Result<()> {
-    let mut retry_count = 0;
-    let mut rpc_index = 0;
+    // 未使用的变量标记为_开头或移除
+    let _retry_count = 0;
+    let _rpc_index = 0;
     
     // 创建共享的任务状态
     let active_tasks = Arc::new(AtomicUsize::new(0));

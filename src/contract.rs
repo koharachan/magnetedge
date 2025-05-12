@@ -1,7 +1,6 @@
 use ethers::prelude::*;
 
 // 合约 ABI 定义
-#[derive(Clone)]
 abigen!(
     MiningContract,
     r#"[
@@ -116,4 +115,5 @@ abigen!(
             "type": "function"
         }
     ]"#,
+    derives(Clone)
 ); 
