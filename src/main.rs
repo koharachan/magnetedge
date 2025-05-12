@@ -474,8 +474,9 @@ async fn mine_solution(nonce: U256, address: Address, difficulty: U256) -> Resul
         max_u256 / diff
     };
     
-    // 预计算编码前缀
-    let prefix = encode_packed(&[Token::Uint(nonce), Token::Address(address)])?;
+    // 预计算编码前缀 - 修改为与JS版本一致的方式
+    // 原JS: const prefix = ethers.utils.solidityPack(['uint256', 'address'], [nonce, address]);
+    let prefix = solidity_pack_uint_address(nonce, address)?;
     
     // 创建多个挖矿任务
     let mut handles = vec![];
@@ -491,7 +492,9 @@ async fn mine_solution(nonce: U256, address: Address, difficulty: U256) -> Resul
             let step = U256::from(num_threads as u64);
             
             while !solution_found.load(Ordering::Relaxed) {
-                let encoded = encode_packed(&[Token::Bytes(prefix.clone()), Token::Uint(solution)])?;
+                // 修改为与JS版本一致的哈希计算方式
+                // 原JS: const encoded = ethers.utils.solidityPack(['bytes', 'uint256'], [prefix, solution]);
+                let encoded = solidity_pack_bytes_uint(prefix.clone(), solution)?;
                 let hash = keccak256(encoded);
                 total_hashes.fetch_add(1, Ordering::Relaxed);
                 
@@ -570,7 +573,38 @@ async fn handle_mining_error(error: anyhow::Error, retry_count: &mut usize) -> R
     Ok(())
 }
 
-// 编码ethers类型到紧凑格式
+// 替换旧的encode_packed函数，添加与JavaScript一致的实现
+// 特定的solidityPack实现，对应JS版本中的ethers.utils.solidityPack(['uint256', 'address'], [nonce, address])
+fn solidity_pack_uint_address(num: U256, addr: Address) -> Result<Vec<u8>> {
+    let mut result = Vec::with_capacity(32 + 20);
+    
+    // 添加uint256，固定32字节长度
+    let mut buffer = [0u8; 32];
+    num.to_big_endian(&mut buffer);
+    result.extend_from_slice(&buffer);
+    
+    // 添加address，20字节
+    result.extend_from_slice(addr.as_bytes());
+    
+    Ok(result)
+}
+
+// 特定的solidityPack实现，对应JS版本中的ethers.utils.solidityPack(['bytes', 'uint256'], [prefix, solution])
+fn solidity_pack_bytes_uint(bytes: Vec<u8>, num: U256) -> Result<Vec<u8>> {
+    let mut result = Vec::with_capacity(bytes.len() + 32);
+    
+    // 添加bytes，保持原始长度
+    result.extend_from_slice(&bytes);
+    
+    // 添加uint256，固定32字节长度
+    let mut buffer = [0u8; 32];
+    num.to_big_endian(&mut buffer);
+    result.extend_from_slice(&buffer);
+    
+    Ok(result)
+}
+
+// 保留原函数，但只用于其他场景
 fn encode_packed(tokens: &[Token]) -> Result<Vec<u8>> {
     let mut result = Vec::new();
     
