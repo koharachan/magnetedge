@@ -1,0 +1,36 @@
+[package]
+name = "pow-client-rust"
+version = "0.1.0"
+edition = "2021"
+authors = ["MagnetPOW Team"]
+description = "Magnet POW区块链挖矿客户端的Rust实现"
+
+[dependencies]
+ethers = { version = "2.0", features = ["abigen", "legacy"] }
+tokio = { version = "1.28", features = ["full"] }
+anyhow = "1.0"
+thiserror = "1.0"
+keccak-hash = "0.10"
+hex = "0.4"
+indicatif = "0.17"
+colored = "2.0"
+dialoguer = "0.10"
+console = "0.15"
+num-bigint = "0.4"
+num-traits = "0.2"
+dotenv = "0.15"
+lazy_static = "1.4"
+futures = "0.3"
+rand = "0.8"
+clap = { version = "4.3", features = ["derive"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[[bin]]
+name = "pow-client"
+path = "src/main.rs" 

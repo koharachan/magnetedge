@@ -1,0 +1,471 @@
+use anyhow::{anyhow, Result};
+use colored::*;
+use dialoguer::{Input, Select};
+use ethers::{
+    abi::Abi,
+    prelude::*,
+    providers::{Http, Provider},
+    utils::keccak256,
+};
+use futures::future::join_all;
+use indicatif::{ProgressBar, ProgressStyle};
+use num_bigint::BigUint;
+use num_traits::Num;
+use std::{
+    convert::TryFrom,
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc,
+    },
+    time::{Duration, Instant},
+};
+use tokio::time::sleep;
+
+mod contract;
+
+use contract::mining_contract;
+
+// 定义常量
+const CONTRACT_ADDRESS: &str = "0x51e0ab7f7db4a2bf4500dfa59f7a4957afc8c02e";
+const RPC_OPTIONS: [&str; 4] = [
+    "https://node1.magnetchain.xyz",
+    "https://node2.magnetchain.xyz",
+    "https://node3.magnetchain.xyz",
+    "https://node4.magnetchain.xyz",
+];
+const MIN_WALLET_BALANCE: f64 = 0.1;
+const MIN_CONTRACT_BALANCE: f64 = 3.0;
+const MAX_RETRIES: usize = 5;
+const MINING_TIMEOUT_SECS: u64 = 600; // 10分钟
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    print_welcome_message();
+
+    // 选择RPC节点
+    let rpc_url = select_rpc_node()?;
+    println!("{}", format!("已选择 RPC / Selected RPC: {}", rpc_url).green());
+
+    // 初始化以太坊提供者
+    let provider = Provider::<Http>::try_from(rpc_url)?;
+    
+    // 输入私钥并创建钱包
+    let wallet = input_private_key(provider.clone())?;
+    println!("{}", format!("钱包地址 / Wallet address: {}", wallet.address()).green());
+
+    // 检查钱包余额
+    let balance = check_wallet_balance(&wallet).await?;
+    
+    // 初始化合约
+    let contract = init_contract(wallet.clone())?;
+    
+    // 检查合约余额
+    check_contract_balance(&contract).await?;
+    
+    // 开始挖矿循环
+    println!("{}", "\n挖矿模式 / Mining Mode:".bold());
+    println!("{}", "免费挖矿 (3 MAG 每次哈希) / Free Mining (3 MAG per hash)".cyan());
+    println!("{}", "\n开始挖矿 / Starting mining...".bold().green());
+    
+    start_mining_loop(wallet, contract).await?;
+    
+    Ok(())
+}
+
+fn print_welcome_message() {
+    println!("{}", " 你好，欢迎使用 Magnet POW 区块链挖矿客户端！ ".bold().on_cyan().black());
+    println!("{}", " Hello, welcome to Magnet POW Blockchain Mining Client! ".bold().on_cyan().black());
+    println!("{}", "启动挖矿客户端，需要确保钱包里有0.1MAG，如果没有，加入TG群免费领取0.1 MAG空投。".bold().magenta());
+    println!("{}", "To start the mining client, ensure your wallet has 0.1 MAG. If not, join the Telegram group for a free 0.1 MAG airdrop.".bold().magenta());
+    println!("{}", "TG群链接 / Telegram group link: https://t.me/MagnetPOW".bold().magenta());
+}
+
+fn select_rpc_node() -> Result<&'static str> {
+    println!("{}", "\n选择 RPC 节点 / Select RPC Node:".bold());
+    
+    for (i, rpc) in RPC_OPTIONS.iter().enumerate() {
+        println!("{}", format!("{}. {}", i + 1, rpc).cyan());
+    }
+    
+    let selection = Select::new()
+        .with_prompt("选择节点 / Select node")
+        .items(&RPC_OPTIONS)
+        .default(0)
+        .interact()?;
+        
+    Ok(RPC_OPTIONS[selection])
+}
+
+fn input_private_key<P: JsonRpcClient>(provider: Provider<P>) -> Result<LocalWallet> {
+    let max_attempts = 3;
+    let mut attempts = 0;
+    
+    while attempts < max_attempts {
+        let private_key: String = Input::new()
+            .with_prompt("\n请输入私钥 / Enter private key (starts with 0x)")
+            .validate_with(|input: &String| -> Result<(), &str> {
+                if input.starts_with("0x") && input.len() == 66 && hex::decode(&input[2..]).is_ok() {
+                    Ok(())
+                } else {
+                    Err("私钥格式错误：需以0x开头，后面跟64位十六进制字符 / Invalid private key: Must start with 0x followed by 64 hexadecimal characters")
+                }
+            })
+            .interact()?;
+            
+        match private_key.parse::<LocalWallet>() {
+            Ok(wallet) => return Ok(wallet.with_provider(provider)),
+            Err(e) => {
+                attempts += 1;
+                eprintln!(
+                    "{}",
+                    format!(
+                        "私钥解析错误 / Private key parsing error: {}. 还剩 {} 次尝试。 / {} attempts left.",
+                        e,
+                        max_attempts - attempts,
+                        max_attempts - attempts
+                    )
+                    .red()
+                );
+                
+                if attempts == max_attempts {
+                    return Err(anyhow!("达到最大尝试次数，程序退出 / Max attempts reached, exiting."));
+                }
+            }
+        }
+    }
+    
+    Err(anyhow!("无法解析私钥 / Unable to parse private key"))
+}
+
+async fn check_wallet_balance<M: Middleware>(wallet: &SignerMiddleware<M, LocalWallet>) -> Result<U256> {
+    let balance = wallet.get_balance(wallet.address(), None).await?;
+    println!(
+        "{}",
+        format!(
+            "当前余额 / Current balance: {} MAG",
+            ethers::utils::format_ether(balance)
+        )
+        .green()
+    );
+    
+    let min_balance = ethers::utils::parse_ether(MIN_WALLET_BALANCE)?;
+    if balance < min_balance {
+        return Err(anyhow!(
+            "钱包余额不足 / Insufficient balance: {} MAG (需要至少 {} MAG / Requires at least {} MAG)\n请通过 Telegram 群领取免费 MAG 或充值 / Please claim free MAG via Telegram or fund the wallet.",
+            ethers::utils::format_ether(balance),
+            MIN_WALLET_BALANCE,
+            MIN_WALLET_BALANCE
+        ));
+    }
+    
+    Ok(balance)
+}
+
+fn init_contract<M: Middleware>(wallet: SignerMiddleware<M, LocalWallet>) -> Result<mining_contract<SignerMiddleware<M, LocalWallet>>> {
+    let contract_address = CONTRACT_ADDRESS.parse::<Address>()?;
+    let contract = mining_contract::new(contract_address, Arc::new(wallet));
+    Ok(contract)
+}
+
+async fn check_contract_balance<M: Middleware>(contract: &mining_contract<M>) -> Result<U256> {
+    let contract_balance = contract.get_contract_balance().call().await?;
+    println!(
+        "{}",
+        format!(
+            "池中余额 / Pool balance: {} MAG",
+            ethers::utils::format_ether(contract_balance)
+        )
+        .green()
+    );
+    
+    let min_contract_balance = ethers::utils::parse_ether(MIN_CONTRACT_BALANCE)?;
+    if contract_balance < min_contract_balance {
+        return Err(anyhow!(
+            "合约余额不足 / Insufficient contract balance: {} MAG (需要至少 {} MAG / Requires at least {} MAG)\n请联系 Magnet 链管理员充值合约 / Please contact Magnet chain admin to fund the contract.",
+            ethers::utils::format_ether(contract_balance),
+            MIN_CONTRACT_BALANCE,
+            MIN_CONTRACT_BALANCE
+        ));
+    }
+    
+    Ok(contract_balance)
+}
+
+async fn start_mining_loop<M: Middleware + 'static>(
+    wallet: SignerMiddleware<M, LocalWallet>,
+    contract: mining_contract<SignerMiddleware<M, LocalWallet>>,
+) -> Result<()> {
+    let mut retry_count = 0;
+    
+    loop {
+        match mine_once(&wallet, &contract).await {
+            Ok(_) => {
+                retry_count = 0; // 重置重试计数
+            }
+            Err(err) => {
+                handle_mining_error(err, &mut retry_count).await?;
+            }
+        }
+    }
+}
+
+async fn mine_once<M: Middleware + 'static>(
+    wallet: &SignerMiddleware<M, LocalWallet>,
+    contract: &mining_contract<SignerMiddleware<M, LocalWallet>>,
+) -> Result<()> {
+    // 请求新任务
+    println!("{}", "请求新挖矿任务 / Requesting new mining task...".cyan());
+    
+    let tx = contract
+        .request_mining_task()
+        .gas_price(None)
+        .send()
+        .await?
+        .await?
+        .ok_or_else(|| anyhow!("交易失败 / Transaction failed"))?;
+        
+    println!(
+        "{}",
+        format!(
+            "任务请求成功 / Task requested successfully, 交易哈希 / Transaction hash: {}",
+            tx.transaction_hash
+        )
+        .green()
+    );
+    
+    // 获取任务
+    let task = contract.get_my_task().call().await?;
+    
+    if !task.2 {
+        // 如果任务不活跃
+        println!("{}", "没有活跃的挖矿任务 / No active mining task".yellow());
+        sleep(Duration::from_secs(5)).await;
+        return Err(anyhow!("没有活跃的挖矿任务 / No active mining task"));
+    }
+    
+    let nonce = task.0;
+    let difficulty = task.1;
+    
+    println!(
+        "{}",
+        format!("任务 / Task: nonce={}, difficulty={}", nonce, difficulty).cyan()
+    );
+    
+    // 计算解决方案
+    println!("{}", "正在计算解决方案 / Calculating solution...".cyan());
+    
+    let solution = tokio::time::timeout(
+        Duration::from_secs(MINING_TIMEOUT_SECS),
+        mine_solution(nonce, wallet.address(), difficulty),
+    )
+    .await??;
+    
+    println!("{}", format!("找到解决方案 / Solution found: {}", solution).green());
+    
+    // 验证任务是否仍然有效
+    let current_task = contract.get_my_task().call().await?;
+    if !current_task.2 || current_task.0 != nonce {
+        println!("{}", "任务已失效，重新请求 / Task expired, requesting new task...".yellow());
+        return Err(anyhow!("任务已失效 / Task expired"));
+    }
+    
+    // 检查合约余额
+    let contract_balance = contract.get_contract_balance().call().await?;
+    let min_contract_balance = ethers::utils::parse_ether(MIN_CONTRACT_BALANCE)?;
+    if contract_balance < min_contract_balance {
+        println!("{}", "合约余额不足，无法提交 / Insufficient contract balance, cannot submit.".red());
+        return Err(anyhow!("合约余额不足 / Insufficient contract balance"));
+    }
+    
+    // 提交解决方案
+    println!("{}", "提交解决方案 / Submitting solution...".cyan());
+    
+    let submit_tx = contract
+        .submit_mining_result(solution)
+        .gas_price(None)
+        .send()
+        .await?
+        .await?
+        .ok_or_else(|| anyhow!("提交交易失败 / Submission transaction failed"))?;
+        
+    println!(
+        "{}",
+        format!(
+            "提交成功 / Submission successful, 交易哈希 / Transaction hash: {}",
+            submit_tx.transaction_hash
+        )
+        .green()
+    );
+    
+    // 显示余额变化
+    let new_balance = wallet.get_balance(wallet.address(), None).await?;
+    println!(
+        "{}",
+        format!(
+            "当前余额 / Current balance: {} MAG",
+            ethers::utils::format_ether(new_balance)
+        )
+        .green()
+    );
+    
+    Ok(())
+}
+
+async fn mine_solution(nonce: U256, address: Address, difficulty: U256) -> Result<U256> {
+    // 使用多线程加速挖矿
+    let num_threads = num_cpus::get();
+    let solution_found = Arc::new(AtomicBool::new(false));
+    let found_solution = Arc::new(AtomicU64::new(0));
+    let total_hashes = Arc::new(AtomicU64::new(0));
+    
+    let start_time = Instant::now();
+    
+    // 设置进度条
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(
+        ProgressStyle::default_spinner()
+            .template("{spinner:.green} {msg}")
+            .unwrap(),
+    );
+    
+    // 计算阈值
+    let threshold = {
+        let max_u256 = BigUint::from_str_radix("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", 16)?;
+        let diff = BigUint::from(difficulty.as_u128());
+        max_u256 / diff
+    };
+    
+    // 预计算编码前缀
+    let prefix = encode_packed(&[Token::Uint(nonce), Token::Address(address)])?;
+    
+    // 创建多个挖矿任务
+    let mut handles = vec![];
+    for thread_id in 0..num_threads {
+        let prefix = prefix.clone();
+        let solution_found = solution_found.clone();
+        let found_solution = found_solution.clone();
+        let total_hashes = total_hashes.clone();
+        let threshold = threshold.clone();
+        
+        let handle = tokio::spawn(async move {
+            let mut solution = U256::from(thread_id as u64);
+            let step = U256::from(num_threads as u64);
+            
+            while !solution_found.load(Ordering::Relaxed) {
+                let encoded = encode_packed(&[Token::Bytes(prefix.clone()), Token::Uint(solution)])?;
+                let hash = keccak256(encoded);
+                let hash_value = U256::from(hash.as_ref());
+                total_hashes.fetch_add(1, Ordering::Relaxed);
+                
+                // 检查哈希值是否满足难度要求
+                let hash_bigint = BigUint::from_bytes_be(hash.as_ref());
+                if hash_bigint <= threshold {
+                    solution_found.store(true, Ordering::Relaxed);
+                    found_solution.store(solution.as_u64(), Ordering::Relaxed);
+                    return Ok::<(), anyhow::Error>(());
+                }
+                
+                solution = solution.overflowing_add(step).0;
+                
+                // 每处理1000个哈希值让出一次CPU
+                if solution.as_u64() % 1000 == 0 {
+                    tokio::task::yield_now().await;
+                }
+            }
+            
+            Ok::<(), anyhow::Error>(())
+        });
+        
+        handles.push(handle);
+    }
+    
+    // 更新进度
+    let total_hashes_clone = total_hashes.clone();
+    let solution_found_clone = solution_found.clone();
+    tokio::spawn(async move {
+        while !solution_found_clone.load(Ordering::Relaxed) {
+            let elapsed = start_time.elapsed().as_secs_f64();
+            let hash_count = total_hashes_clone.load(Ordering::Relaxed);
+            let hash_rate = hash_count as f64 / elapsed;
+            
+            pb.set_message(format!(
+                "哈希次数 / Hashes: {}, 哈希速度 / Hash rate: {:.2} H/s",
+                hash_count, hash_rate
+            ));
+            
+            sleep(Duration::from_millis(100)).await;
+        }
+    });
+    
+    // 等待任何一个线程找到解决方案或所有线程完成
+    let _ = join_all(handles).await;
+    
+    pb.finish_and_clear();
+    
+    if solution_found.load(Ordering::Relaxed) {
+        let solution = U256::from(found_solution.load(Ordering::Relaxed));
+        return Ok(solution);
+    }
+    
+    Err(anyhow!("未找到解决方案 / No solution found"))
+}
+
+async fn handle_mining_error(error: anyhow::Error, retry_count: &mut usize) -> Result<()> {
+    eprintln!("{}", format!("挖矿错误 / Mining error: {}", error).red());
+    
+    *retry_count += 1;
+    if *retry_count >= MAX_RETRIES {
+        return Err(anyhow!("达到最大重试次数，程序退出 / Max retries reached, exiting."));
+    }
+    
+    println!(
+        "{}",
+        format!(
+            "5秒后重试（第 {}/{} 次） / Retrying in 5 seconds (Attempt {}/{})",
+            retry_count, MAX_RETRIES, retry_count, MAX_RETRIES
+        )
+        .yellow()
+    );
+    
+    sleep(Duration::from_secs(5)).await;
+    Ok(())
+}
+
+// 编码ethers类型到紧凑格式
+fn encode_packed(tokens: &[Token]) -> Result<Vec<u8>> {
+    let mut result = Vec::new();
+    
+    for token in tokens {
+        match token {
+            Token::Address(addr) => {
+                result.extend_from_slice(addr.as_bytes());
+            }
+            Token::Uint(value) => {
+                let mut buffer = [0u8; 32];
+                value.to_big_endian(&mut buffer);
+                
+                // 跳过前面的零
+                let mut start = 0;
+                while start < 32 && buffer[start] == 0 {
+                    start += 1;
+                }
+                
+                if start == 32 {
+                    // 如果值为0，则添加单个0字节
+                    result.push(0);
+                } else {
+                    // 否则添加非零部分
+                    result.extend_from_slice(&buffer[start..]);
+                }
+            }
+            Token::Bytes(bytes) => {
+                result.extend_from_slice(bytes);
+            }
+            _ => {
+                return Err(anyhow!("不支持的类型 / Unsupported type"));
+            }
+        }
+    }
+    
+    Ok(result)
+} 

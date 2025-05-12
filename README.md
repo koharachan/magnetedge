@@ -1,0 +1,65 @@
+# Magnet POW 区块链挖矿客户端 (Rust版)
+
+Magnet POW区块链挖矿客户端的Rust实现，性能更优，资源占用更低。
+
+## 特点
+
+- 高性能Rust实现，比原JavaScript版本快数倍
+- 多线程挖矿，充分利用CPU资源
+- 美观的命令行界面
+- 支持多RPC节点切换
+- 稳定的错误处理和自动重试
+
+## 依赖项
+
+- Rust 1.70+
+
+## 安装方法
+
+### 直接下载预编译版本
+
+1. 前往[Releases页面](https://github.com/你的用户名/POW-Client-Rust/releases)
+2. 下载适合您操作系统的最新版本
+3. 解压后直接运行可执行文件
+
+### 从源码编译
+
+```bash
+# 克隆仓库
+git clone https://github.com/你的用户名/POW-Client-Rust.git
+cd POW-Client-Rust
+
+# 编译发布版本
+cargo build --release
+
+# 运行程序
+./target/release/pow-client
+```
+
+## 使用说明
+
+1. 启动程序后，选择RPC节点
+2. 输入您的私钥（以0x开头）
+3. 程序会自动检查余额并开始挖矿
+4. 挖矿成功会自动获取奖励
+
+## 技术说明
+
+- 使用`ethers-rs`库处理区块链交互
+- 使用`tokio`进行异步操作
+- 多线程POW挖矿算法
+- 使用`colored`和`indicatif`提供友好的终端界面
+
+## 安全提示
+
+- 请确保私钥安全，不要在不信任的设备上使用
+- 建议为挖矿创建单独的钱包
+- 本程序不会存储或传输您的私钥
+
+## Telegram群
+
+如需帮助或讨论，请加入Telegram群：https://t.me/MagnetPOW
+
+## 许可证
+
+MIT License 
