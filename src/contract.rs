@@ -115,5 +115,4 @@ abigen!(
             "type": "function"
         }
     ]"#,
-    derives(Clone)
 ); 
