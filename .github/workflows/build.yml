@@ -19,19 +19,19 @@ jobs:
             arch: x86_64
             target: x86_64-pc-windows-msvc
             asset_name: pow-client.exe
-            binary_path: target/release/pow-client.exe
+            binary_path: target/x86_64-pc-windows-msvc/release/pow-client.exe
 
           - os: ubuntu-latest
             arch: x86_64
             target: x86_64-unknown-linux-gnu
             asset_name: pow-client-linux-x86_64
-            binary_path: target/release/pow-client
+            binary_path: target/x86_64-unknown-linux-gnu/release/pow-client
 
           - os: ubuntu-latest
             arch: aarch64
             target: aarch64-unknown-linux-gnu
             asset_name: pow-client-linux-arm64
-            binary_path: target/release/pow-client
+            binary_path: target/aarch64-unknown-linux-gnu/release/pow-client
 
     steps:
       - uses: actions/checkout@v4
