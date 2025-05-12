@@ -229,7 +229,6 @@ async fn start_mining_loop<M: Middleware + 'static>(
 ) -> Result<()> {
     let mut retry_count = 0;
     let mut rpc_index = 0;
-    let mut provider = contract.client().provider().clone();
     
     loop {
         match mine_once(&contract).await {
@@ -239,22 +238,15 @@ async fn start_mining_loop<M: Middleware + 'static>(
             Err(err) => {
                 let err_str = format!("{:?}", err);
                 if err_str.contains("network") || err_str.contains("timeout") || err_str.contains("connection") {
-                    // 网络错误，尝试切换RPC节点
-                    println!("{}", format!("网络错误，尝试切换RPC节点 / Network error, trying another RPC node...").yellow());
+                    // 网络错误，建议用户尝试切换RPC节点
+                    println!("{}", format!("网络错误，建议手动重启并选择其他RPC节点 / Network error, suggest restarting with a different RPC node").yellow());
                     rpc_index = (rpc_index + 1) % RPC_OPTIONS.len();
                     let new_rpc = RPC_OPTIONS[rpc_index];
-                    println!("{}", format!("切换到RPC / Switched to RPC: {}", new_rpc).green());
+                    println!("{}", format!("推荐的RPC / Recommended RPC: {}", new_rpc).green());
                     
-                    // 重新创建provider
-                    match Provider::<Http>::try_from(new_rpc) {
-                        Ok(new_provider) => {
-                            provider = new_provider;
-                            // 重新连接钱包不容易实现，所以继续使用原来的合约对象
-                        },
-                        Err(e) => {
-                            println!("{}", format!("切换RPC失败 / Failed to switch RPC: {}", e).red());
-                        }
-                    }
+                    // 不直接修改provider，而是继续使用原有合约
+                    // 如果连续失败，会通过retry_count退出
+                    handle_mining_error(err, &mut retry_count).await?;
                 } else {
                     // 其他错误
                     handle_mining_error(err, &mut retry_count).await?;
