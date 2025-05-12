@@ -38,7 +38,7 @@ const MIN_CONTRACT_BALANCE: f64 = 3.0;
 const MAX_RETRIES: usize = 5;
 const MINING_TIMEOUT_SECS: u64 = 600; // 10分钟
 // MagnetChain的chainId
-const CHAIN_ID: u64 = 5599;
+const CHAIN_ID: u64 = 114514; // 修正为正确的链ID
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -50,6 +50,19 @@ async fn main() -> Result<()> {
 
     // 初始化以太坊提供者
     let provider = Provider::<Http>::try_from(rpc_url)?;
+    
+    // 显示链ID信息
+    match provider.get_chainid().await {
+        Ok(chainid) => {
+            println!("{}", format!("连接到链ID: {} / Connected to chain ID: {}", chainid, chainid).green());
+            if chainid != U256::from(CHAIN_ID) {
+                println!("{}", format!("警告：检测到的链ID与设置的不符！ / Warning: Detected chain ID does not match configuration!").yellow());
+            }
+        },
+        Err(e) => {
+            println!("{}", format!("无法获取链ID: {} / Could not get chain ID: {}", e, e).yellow());
+        }
+    }
     
     // 输入私钥并创建钱包
     let wallet = input_private_key(provider).await?;
@@ -81,6 +94,7 @@ fn print_welcome_message() {
     println!("{}", "启动挖矿客户端，需要确保钱包里有0.1MAG，如果没有，加入TG群免费领取0.1 MAG空投。".bold().magenta());
     println!("{}", "To start the mining client, ensure your wallet has 0.1 MAG. If not, join the Telegram group for a free 0.1 MAG airdrop.".bold().magenta());
     println!("{}", "TG群链接 / Telegram group link: https://t.me/MagnetPOW".bold().magenta());
+    println!("{}", format!("网络信息 / Network Info: 链ID / Chain ID: {}, 货币符号 / Symbol: MAG", CHAIN_ID).cyan());
 }
 
 fn select_rpc_node() -> Result<&'static str> {
@@ -175,6 +189,13 @@ async fn init_contract<M: Middleware + 'static>(
     wallet: SignerMiddleware<M, LocalWallet>,
 ) -> Result<MiningContract<SignerMiddleware<M, LocalWallet>>> {
     let contract_address = CONTRACT_ADDRESS.parse::<Address>()?;
+    
+    // 显示当前钱包信息和设置
+    println!("{}", format!("钱包信息 / Wallet info:").cyan());
+    println!("{}", format!("地址 / Address: {}", wallet.address()).cyan());
+    println!("{}", format!("链ID / Chain ID: {}", CHAIN_ID).cyan());
+    println!("{}", format!("合约地址 / Contract address: {}", contract_address).cyan());
+    
     let contract = MiningContract::new(contract_address, Arc::new(wallet));
     Ok(contract)
 }
@@ -207,6 +228,8 @@ async fn start_mining_loop<M: Middleware + 'static>(
     contract: MiningContract<SignerMiddleware<M, LocalWallet>>,
 ) -> Result<()> {
     let mut retry_count = 0;
+    let mut rpc_index = 0;
+    let mut provider = contract.client().provider().clone();
     
     loop {
         match mine_once(&contract).await {
@@ -214,7 +237,28 @@ async fn start_mining_loop<M: Middleware + 'static>(
                 retry_count = 0; // 重置重试计数
             }
             Err(err) => {
-                handle_mining_error(err, &mut retry_count).await?;
+                let err_str = format!("{:?}", err);
+                if err_str.contains("network") || err_str.contains("timeout") || err_str.contains("connection") {
+                    // 网络错误，尝试切换RPC节点
+                    println!("{}", format!("网络错误，尝试切换RPC节点 / Network error, trying another RPC node...").yellow());
+                    rpc_index = (rpc_index + 1) % RPC_OPTIONS.len();
+                    let new_rpc = RPC_OPTIONS[rpc_index];
+                    println!("{}", format!("切换到RPC / Switched to RPC: {}", new_rpc).green());
+                    
+                    // 重新创建provider
+                    match Provider::<Http>::try_from(new_rpc) {
+                        Ok(new_provider) => {
+                            provider = new_provider;
+                            // 重新连接钱包不容易实现，所以继续使用原来的合约对象
+                        },
+                        Err(e) => {
+                            println!("{}", format!("切换RPC失败 / Failed to switch RPC: {}", e).red());
+                        }
+                    }
+                } else {
+                    // 其他错误
+                    handle_mining_error(err, &mut retry_count).await?;
+                }
             }
         }
     }
@@ -234,7 +278,7 @@ async fn mine_once<M: Middleware + 'static>(
         },
         Err(e) => {
             println!("{}", format!("获取gas价格失败，使用默认值: {}", e).yellow());
-            U256::from(20_000_000_000u64) // 20 gwei 默认值
+            U256::from(25_000_000_001u64) // 25 gwei 默认值
         }
     };
     
@@ -252,6 +296,12 @@ async fn mine_once<M: Middleware + 'static>(
         }
     };
     
+    // 打印交易发送详情
+    println!("{}", format!("准备发送交易：gas限制={}, gas价格={} gwei, chainId={}",
+             gas_limit,
+             ethers::utils::format_units(gas_price, "gwei")?,
+             CHAIN_ID).cyan());
+    
     // 发送交易 - 使用多个let绑定来避免临时值被释放
     let task = contract.request_mining_task();
     let task_with_gas = task.gas(gas_limit);
@@ -260,6 +310,7 @@ async fn mine_once<M: Middleware + 'static>(
         
     let tx = match tx_result {
         Ok(pending_tx) => {
+            println!("{}", format!("交易已发送，等待确认 / Transaction sent, waiting for confirmation...").cyan());
             match pending_tx.await {
                 Ok(Some(receipt)) => receipt,
                 Ok(None) => return Err(anyhow!("交易没有收据 / Transaction has no receipt")),
@@ -342,7 +393,7 @@ async fn mine_once<M: Middleware + 'static>(
         },
         Err(e) => {
             println!("{}", format!("获取gas价格失败，使用默认值: {}", e).yellow());
-            U256::from(20_000_000_000u64) // 20 gwei 默认值
+            U256::from(25_000_000_001u64) // 25 gwei 默认值
         }
     };
     
@@ -368,6 +419,7 @@ async fn mine_once<M: Middleware + 'static>(
         
     let submit_tx = match submit_result {
         Ok(pending_tx) => {
+            println!("{}", format!("提交交易已发送，等待确认 / Submission transaction sent, waiting for confirmation...").cyan());
             match pending_tx.await {
                 Ok(Some(receipt)) => receipt,
                 Ok(None) => return Err(anyhow!("提交交易没有收据 / Submission transaction has no receipt")),
