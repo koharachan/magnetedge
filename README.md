@@ -9,6 +9,7 @@ Magnet POW区块链挖矿客户端的Rust实现，性能更优，资源占用更
 - 美观的命令行界面
 - 支持多RPC节点切换
 - 稳定的错误处理和自动重试
+- 支持多平台：Windows、Linux和ARM64 Linux(如手机)
 
 ## 依赖项
 
@@ -45,13 +46,22 @@ cargo build --release
 
 ## GitHub Actions自动构建
 
-本项目使用GitHub Actions自动构建Windows可执行文件。每当推送带有`v`前缀的标签（如`v0.1.0`）时，会自动触发构建流程并发布Release。
+本项目使用GitHub Actions自动构建多平台可执行文件：
+- Windows (x86_64)
+- Linux (x86_64)
+- Linux ARM64 (适用于ARM设备，如手机)
+
+每当推送带有`v`前缀的标签（如`v0.1.0`）时，会自动触发构建流程并发布Release。
 
 ```bash
 # 创建新版本并推送标签
 git tag v0.1.0
 git push origin v0.1.0
 ```
+
+您也可以使用项目根目录下的脚本在本地构建所有平台版本：
+- Linux/macOS: `./build_all.sh`
+- Windows: `build_all.bat`
 
 您也可以手动触发工作流程：
 1. 在GitHub仓库页面点击"Actions"选项卡
