@@ -117,4 +117,4 @@ abigen!(
     ]"#,
 );
 
-pub use miningcontract::*; 
+pub use mining_contract::*; 

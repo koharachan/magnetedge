@@ -2,7 +2,6 @@ use anyhow::{anyhow, Result};
 use colored::*;
 use dialoguer::{Input, Select};
 use ethers::{
-    abi::Abi,
     prelude::*,
     providers::{Http, Provider},
     utils::keccak256,
@@ -50,14 +49,15 @@ async fn main() -> Result<()> {
     let provider = Provider::<Http>::try_from(rpc_url)?;
     
     // 输入私钥并创建钱包
-    let wallet = input_private_key(provider.clone())?;
-    println!("{}", format!("钱包地址 / Wallet address: {}", wallet.address()).green());
+    let wallet = input_private_key(&provider).await?;
+    let wallet_address = wallet.address();
+    println!("{}", format!("钱包地址 / Wallet address: {}", wallet_address).green());
 
     // 检查钱包余额
     let balance = check_wallet_balance(&wallet).await?;
     
     // 初始化合约
-    let contract = init_contract(wallet.clone())?;
+    let contract = init_contract(wallet).await?;
     
     // 检查合约余额
     check_contract_balance(&contract).await?;
@@ -67,7 +67,7 @@ async fn main() -> Result<()> {
     println!("{}", "免费挖矿 (3 MAG 每次哈希) / Free Mining (3 MAG per hash)".cyan());
     println!("{}", "\n开始挖矿 / Starting mining...".bold().green());
     
-    start_mining_loop(wallet, contract).await?;
+    start_mining_loop(contract).await?;
     
     Ok(())
 }
@@ -96,7 +96,7 @@ fn select_rpc_node() -> Result<&'static str> {
     Ok(RPC_OPTIONS[selection])
 }
 
-fn input_private_key<P: JsonRpcClient>(provider: Provider<P>) -> Result<LocalWallet> {
+async fn input_private_key<P: JsonRpcClient + 'static>(provider: &Provider<P>) -> Result<SignerMiddleware<Provider<P>, LocalWallet>> {
     let max_attempts = 3;
     let mut attempts = 0;
     
@@ -113,7 +113,10 @@ fn input_private_key<P: JsonRpcClient>(provider: Provider<P>) -> Result<LocalWal
             .interact()?;
             
         match private_key.parse::<LocalWallet>() {
-            Ok(wallet) => return Ok(wallet.with_provider(provider)),
+            Ok(wallet) => {
+                let client = SignerMiddleware::new(provider.clone(), wallet);
+                return Ok(client);
+            },
             Err(e) => {
                 attempts += 1;
                 eprintln!(
@@ -137,7 +140,7 @@ fn input_private_key<P: JsonRpcClient>(provider: Provider<P>) -> Result<LocalWal
     Err(anyhow!("无法解析私钥 / Unable to parse private key"))
 }
 
-async fn check_wallet_balance<M: Middleware>(wallet: &SignerMiddleware<M, LocalWallet>) -> Result<U256> {
+async fn check_wallet_balance<M: Middleware + 'static>(wallet: &SignerMiddleware<M, LocalWallet>) -> Result<U256> {
     let balance = wallet.get_balance(wallet.address(), None).await?;
     println!(
         "{}",
@@ -161,13 +164,15 @@ async fn check_wallet_balance<M: Middleware>(wallet: &SignerMiddleware<M, LocalW
     Ok(balance)
 }
 
-fn init_contract<M: Middleware>(wallet: SignerMiddleware<M, LocalWallet>) -> Result<mining_contract<SignerMiddleware<M, LocalWallet>>> {
+async fn init_contract<M: Middleware + 'static>(
+    wallet: SignerMiddleware<M, LocalWallet>,
+) -> Result<mining_contract<SignerMiddleware<M, LocalWallet>>> {
     let contract_address = CONTRACT_ADDRESS.parse::<Address>()?;
     let contract = mining_contract::new(contract_address, Arc::new(wallet));
     Ok(contract)
 }
 
-async fn check_contract_balance<M: Middleware>(contract: &mining_contract<M>) -> Result<U256> {
+async fn check_contract_balance<M: Middleware + 'static>(contract: &mining_contract<M>) -> Result<U256> {
     let contract_balance = contract.get_contract_balance().call().await?;
     println!(
         "{}",
@@ -192,13 +197,12 @@ async fn check_contract_balance<M: Middleware>(contract: &mining_contract<M>) ->
 }
 
 async fn start_mining_loop<M: Middleware + 'static>(
-    wallet: SignerMiddleware<M, LocalWallet>,
     contract: mining_contract<SignerMiddleware<M, LocalWallet>>,
 ) -> Result<()> {
     let mut retry_count = 0;
     
     loop {
-        match mine_once(&wallet, &contract).await {
+        match mine_once(&contract).await {
             Ok(_) => {
                 retry_count = 0; // 重置重试计数
             }
@@ -210,7 +214,6 @@ async fn start_mining_loop<M: Middleware + 'static>(
 }
 
 async fn mine_once<M: Middleware + 'static>(
-    wallet: &SignerMiddleware<M, LocalWallet>,
     contract: &mining_contract<SignerMiddleware<M, LocalWallet>>,
 ) -> Result<()> {
     // 请求新任务
@@ -251,12 +254,15 @@ async fn mine_once<M: Middleware + 'static>(
         format!("任务 / Task: nonce={}, difficulty={}", nonce, difficulty).cyan()
     );
     
+    // 获取钱包地址（从合约实例的签名者中提取）
+    let wallet_address = contract.client().address();
+    
     // 计算解决方案
     println!("{}", "正在计算解决方案 / Calculating solution...".cyan());
     
     let solution = tokio::time::timeout(
         Duration::from_secs(MINING_TIMEOUT_SECS),
-        mine_solution(nonce, wallet.address(), difficulty),
+        mine_solution(nonce, wallet_address, difficulty),
     )
     .await??;
     
@@ -298,7 +304,7 @@ async fn mine_once<M: Middleware + 'static>(
     );
     
     // 显示余额变化
-    let new_balance = wallet.get_balance(wallet.address(), None).await?;
+    let new_balance = contract.client().get_balance(contract.client().address(), None).await?;
     println!(
         "{}",
         format!(
