@@ -252,13 +252,11 @@ async fn mine_once<M: Middleware + 'static>(
         }
     };
     
-    // 发送交易
-    let tx_result = contract
-        .request_mining_task()
-        .gas(gas_limit)
-        .gas_price(gas_price)
-        .send()
-        .await;
+    // 发送交易 - 使用多个let绑定来避免临时值被释放
+    let task = contract.request_mining_task();
+    let task_with_gas = task.gas(gas_limit);
+    let task_with_gas_price = task_with_gas.gas_price(gas_price);
+    let tx_result = task_with_gas_price.send().await;
         
     let tx = match tx_result {
         Ok(pending_tx) => {
@@ -362,13 +360,11 @@ async fn mine_once<M: Middleware + 'static>(
         }
     };
     
-    // 发送提交交易
-    let submit_result = contract
-        .submit_mining_result(solution)
-        .gas(submit_gas_limit)
-        .gas_price(gas_price)
-        .send()
-        .await;
+    // 发送提交交易 - 使用多个let绑定来避免临时值被释放
+    let submit_task = contract.submit_mining_result(solution);
+    let submit_task_with_gas = submit_task.gas(submit_gas_limit);
+    let submit_task_with_gas_price = submit_task_with_gas.gas_price(gas_price);
+    let submit_result = submit_task_with_gas_price.send().await;
         
     let submit_tx = match submit_result {
         Ok(pending_tx) => {
