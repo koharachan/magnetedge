@@ -523,10 +523,10 @@ async fn mine_solution(nonce: U256, address: Address, difficulty: U256) -> Resul
             
             // 每10秒显示线程状态
             let thread_start_time = Instant::now();
-            let thread_hashes = AtomicU64::new(0);
+            let thread_hashes = Arc::new(AtomicU64::new(0));
             
             tokio::spawn({
-                let thread_hashes = &thread_hashes;
+                let thread_hashes = thread_hashes.clone();
                 let solution_found = solution_found.clone();
                 async move {
                     while !solution_found.load(Ordering::Relaxed) {
