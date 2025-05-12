@@ -43,6 +43,21 @@ cargo build --release
 3. 程序会自动检查余额并开始挖矿
 4. 挖矿成功会自动获取奖励
 
+## GitHub Actions自动构建
+
+本项目使用GitHub Actions自动构建Windows可执行文件。每当推送带有`v`前缀的标签（如`v0.1.0`）时，会自动触发构建流程并发布Release。
+
+```bash
+# 创建新版本并推送标签
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+您也可以手动触发工作流程：
+1. 在GitHub仓库页面点击"Actions"选项卡
+2. 选择"Build and Release"工作流
+3. 点击"Run workflow"按钮
+
 ## 技术说明
 
 - 使用`ethers-rs`库处理区块链交互
