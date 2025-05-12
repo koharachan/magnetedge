@@ -10,11 +10,10 @@ use ethers::{
 use futures::future::join_all;
 use indicatif::{ProgressBar, ProgressStyle};
 use num_bigint::BigUint;
-use num_traits::Num;
 use std::{
     convert::TryFrom,
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Arc,
     },
     time::{Duration, Instant},
@@ -451,11 +450,15 @@ async fn mine_once<M: Middleware + 'static>(
 }
 
 async fn mine_solution(nonce: U256, address: Address, difficulty: U256) -> Result<U256> {
-    // 使用多线程加速挖矿
-    let num_threads = num_cpus::get();
+    // 优化1: 增加线程数量，默认CPU核心数，但最少4个线程
+    let num_threads = std::cmp::max(num_cpus::get(), 4);
     let solution_found = Arc::new(AtomicBool::new(false));
     let found_solution = Arc::new(AtomicU64::new(0));
     let total_hashes = Arc::new(AtomicU64::new(0));
+    
+    // 优化2: 记录上次找到解决方案的统计信息，用于启发式搜索
+    static LAST_SUCCESSFUL_THREAD: AtomicUsize = AtomicUsize::new(0);
+    static LAST_SOLUTION_RANGE: AtomicU64 = AtomicU64::new(0);
     
     let start_time = Instant::now();
     
@@ -467,51 +470,119 @@ async fn mine_solution(nonce: U256, address: Address, difficulty: U256) -> Resul
             .unwrap(),
     );
     
-    // 计算阈值
+    // 优化3: 使用更精确的阈值计算
     let threshold = {
-        let max_u256 = BigUint::from_str_radix("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", 16)?;
+        let max_u256 = BigUint::from(2u32).pow(256) - BigUint::from(1u32);
         let diff = BigUint::from(difficulty.as_u128());
         max_u256 / diff
     };
     
-    // 预计算编码前缀 - 修改为与JS版本一致的方式
-    // 原JS: const prefix = ethers.utils.solidityPack(['uint256', 'address'], [nonce, address]);
+    // 预计算编码前缀
     let prefix = solidity_pack_uint_address(nonce, address)?;
     
-    // 创建多个挖矿任务
+    // 创建多个挖矿任务，考虑之前的成功记录
     let mut handles = vec![];
+    let last_successful_thread = LAST_SUCCESSFUL_THREAD.load(Ordering::Relaxed);
+    let last_solution_range = LAST_SOLUTION_RANGE.load(Ordering::Relaxed);
+    
+    // 预分配缓冲区，提高性能
+    let buffer_size = 32 * 1024; // 32KB预分配缓冲区
+    
     for thread_id in 0..num_threads {
         let prefix = prefix.clone();
         let solution_found = solution_found.clone();
         let found_solution = found_solution.clone();
         let total_hashes = total_hashes.clone();
         let threshold = threshold.clone();
+        let pb = pb.clone();
+        
+        // 优化4: 启发式搜索策略 - 优先分配给上次成功的线程附近区域
+        let start_solution = if last_solution_range > 0 && thread_id == last_successful_thread {
+            // 成功线程从上次成功位置附近开始
+            let base = last_solution_range.saturating_sub(1000);
+            U256::from(base + (thread_id as u64))
+        } else {
+            // 其他线程正常分布
+            U256::from(thread_id as u64)
+        };
         
         let handle = tokio::spawn(async move {
-            let mut solution = U256::from(thread_id as u64);
+            let mut solution = start_solution;
             let step = U256::from(num_threads as u64);
             
+            // 优化5: 批处理计算，每次处理多个哈希
+            const BATCH_SIZE: usize = 16;
+            let mut encoded_buffers: Vec<Vec<u8>> = Vec::with_capacity(BATCH_SIZE);
+            let mut solutions: Vec<U256> = Vec::with_capacity(BATCH_SIZE);
+            
+            // 预分配缓冲区
+            for _ in 0..BATCH_SIZE {
+                encoded_buffers.push(Vec::with_capacity(buffer_size));
+                solutions.push(U256::zero());
+            }
+            
+            // 每10秒显示线程状态
+            let thread_start_time = Instant::now();
+            let thread_hashes = AtomicU64::new(0);
+            
+            tokio::spawn({
+                let thread_hashes = &thread_hashes;
+                let solution_found = solution_found.clone();
+                async move {
+                    while !solution_found.load(Ordering::Relaxed) {
+                        sleep(Duration::from_secs(10)).await;
+                        if solution_found.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        
+                        let elapsed = thread_start_time.elapsed().as_secs_f64();
+                        let hashes = thread_hashes.load(Ordering::Relaxed);
+                        let rate = hashes as f64 / elapsed;
+                        
+                        pb.println(format!(
+                            "[线程 {}] 哈希速度: {:.2} H/s, 当前位置: {}",
+                            thread_id, rate, solution
+                        ));
+                    }
+                }
+            });
+            
             while !solution_found.load(Ordering::Relaxed) {
-                // 修改为与JS版本一致的哈希计算方式
-                // 原JS: const encoded = ethers.utils.solidityPack(['bytes', 'uint256'], [prefix, solution]);
-                let encoded = solidity_pack_bytes_uint(prefix.clone(), solution)?;
-                let hash = keccak256(encoded);
-                total_hashes.fetch_add(1, Ordering::Relaxed);
-                
-                // 检查哈希值是否满足难度要求
-                let hash_bigint = BigUint::from_bytes_be(hash.as_ref());
-                if hash_bigint <= threshold {
-                    solution_found.store(true, Ordering::Relaxed);
-                    found_solution.store(solution.as_u64(), Ordering::Relaxed);
-                    return Ok::<(), anyhow::Error>(());
+                // 填充批次
+                for i in 0..BATCH_SIZE {
+                    let current_solution = solution.overflowing_add(U256::from(i)).0;
+                    solutions[i] = current_solution;
+                    encoded_buffers[i].clear();
+                    
+                    // 复用缓冲区而不是每次重新分配
+                    solidity_pack_bytes_uint_into(&prefix, current_solution, &mut encoded_buffers[i])?;
                 }
                 
-                solution = solution.overflowing_add(step).0;
-                
-                // 每处理1000个哈希值让出一次CPU
-                if solution.as_u64() % 1000 == 0 {
-                    tokio::task::yield_now().await;
+                // 处理批次
+                for i in 0..BATCH_SIZE {
+                    let hash = keccak256(&encoded_buffers[i]);
+                    thread_hashes.fetch_add(1, Ordering::Relaxed);
+                    total_hashes.fetch_add(1, Ordering::Relaxed);
+                    
+                    // 检查哈希值是否满足难度要求
+                    let hash_bigint = BigUint::from_bytes_be(hash.as_ref());
+                    if hash_bigint <= threshold {
+                        // 更新成功统计
+                        LAST_SUCCESSFUL_THREAD.store(thread_id, Ordering::Relaxed);
+                        LAST_SOLUTION_RANGE.store(solutions[i].as_u64(), Ordering::Relaxed);
+                        
+                        solution_found.store(true, Ordering::Relaxed);
+                        found_solution.store(solutions[i].as_u64(), Ordering::Relaxed);
+                        return Ok::<(), anyhow::Error>(());
+                    }
                 }
+                
+                // 批量步进
+                solution = solution.overflowing_add(U256::from(BATCH_SIZE)).0;
+                solution = solution.overflowing_add(step.saturating_mul(U256::from(BATCH_SIZE - 1))).0;
+                
+                // 每处理一批哈希值让出一次CPU
+                tokio::task::yield_now().await;
             }
             
             Ok::<(), anyhow::Error>(())
@@ -520,36 +591,82 @@ async fn mine_solution(nonce: U256, address: Address, difficulty: U256) -> Resul
         handles.push(handle);
     }
     
-    // 更新进度
+    // 优化6: 更详细的进度显示
     let total_hashes_clone = total_hashes.clone();
     let solution_found_clone = solution_found.clone();
     let pb_clone = pb.clone();
     tokio::spawn(async move {
+        let mut last_update = Instant::now();
+        let mut last_hash_count = 0;
+        
         while !solution_found_clone.load(Ordering::Relaxed) {
-            let elapsed = start_time.elapsed().as_secs_f64();
+            let now = Instant::now();
+            let elapsed_total = start_time.elapsed().as_secs_f64();
+            let elapsed_since_update = last_update.elapsed().as_secs_f64();
+            
             let hash_count = total_hashes_clone.load(Ordering::Relaxed);
-            let hash_rate = hash_count as f64 / elapsed;
+            let recent_hashes = hash_count - last_hash_count;
+            
+            let total_hash_rate = hash_count as f64 / elapsed_total;
+            let current_hash_rate = if elapsed_since_update > 0.0 {
+                recent_hashes as f64 / elapsed_since_update
+            } else {
+                0.0
+            };
             
             pb_clone.set_message(format!(
-                "哈希次数 / Hashes: {}, 哈希速度 / Hash rate: {:.2} H/s",
-                hash_count, hash_rate
+                "总哈希数 / Total hashes: {}, 平均速度 / Avg rate: {:.2} H/s, 当前速度 / Current rate: {:.2} H/s",
+                hash_count, total_hash_rate, current_hash_rate
             ));
             
-            sleep(Duration::from_millis(100)).await;
+            last_update = now;
+            last_hash_count = hash_count;
+            
+            sleep(Duration::from_millis(500)).await;
         }
     });
     
-    // 等待任何一个线程找到解决方案或所有线程完成
-    let _ = join_all(handles).await;
+    // 优化7: 等待任务完成时的改进逻辑
+    let result_future = join_all(handles);
     
-    pb.finish_and_clear();
-    
-    if solution_found.load(Ordering::Relaxed) {
-        let solution = U256::from(found_solution.load(Ordering::Relaxed));
-        return Ok(solution);
+    // 添加超时处理，默认不超过10分钟
+    match tokio::time::timeout(Duration::from_secs(MINING_TIMEOUT_SECS), result_future).await {
+        Ok(_) => {
+            // 正常完成
+            pb.finish_and_clear();
+            
+            if solution_found.load(Ordering::Relaxed) {
+                let solution = U256::from(found_solution.load(Ordering::Relaxed));
+                return Ok(solution);
+            }
+            
+            Err(anyhow!("未找到解决方案 / No solution found"))
+        },
+        Err(_) => {
+            // 超时
+            pb.finish_with_message("挖矿超时，停止尝试 / Mining timeout, stopping attempts");
+            Err(anyhow!("挖矿超时 / Mining timeout"))
+        }
+    }
+}
+
+// 优化的内存复用版本solidity_pack_bytes_uint
+fn solidity_pack_bytes_uint_into(bytes: &[u8], num: U256, output: &mut Vec<u8>) -> Result<()> {
+    // 确保有足够的容量
+    let required_capacity = bytes.len() + 32;
+    if output.capacity() < required_capacity {
+        output.reserve(required_capacity - output.capacity());
     }
     
-    Err(anyhow!("未找到解决方案 / No solution found"))
+    // 添加bytes，保持原始长度
+    output.extend_from_slice(bytes);
+    
+    // 添加uint256，固定32字节长度
+    let mut buffer = [0u8; 32];
+    num.to_big_endian(&mut buffer);
+    output.extend_from_slice(&buffer);
+    
+    Ok(())
 }
 
 async fn handle_mining_error(error: anyhow::Error, retry_count: &mut usize) -> Result<()> {
