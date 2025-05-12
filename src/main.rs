@@ -37,6 +37,8 @@ const MIN_WALLET_BALANCE: f64 = 0.1;
 const MIN_CONTRACT_BALANCE: f64 = 3.0;
 const MAX_RETRIES: usize = 5;
 const MINING_TIMEOUT_SECS: u64 = 600; // 10分钟
+// MagnetChain的chainId
+const CHAIN_ID: u64 = 5599;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -114,7 +116,11 @@ async fn input_private_key<P: JsonRpcClient + 'static + Clone>(provider: Provide
             .interact()?;
             
         match private_key.parse::<LocalWallet>() {
-            Ok(wallet) => {
+            Ok(mut wallet) => {
+                // 设置钱包的chainId
+                wallet = wallet.with_chain_id(CHAIN_ID);
+                println!("{}", format!("已设置钱包chainId为: {} / Set wallet chainId to: {}", CHAIN_ID, CHAIN_ID).green());
+                
                 let client = SignerMiddleware::new(provider.clone(), wallet);
                 return Ok(client);
             },
@@ -220,12 +226,61 @@ async fn mine_once<M: Middleware + 'static>(
     // 请求新任务
     println!("{}", "请求新挖矿任务 / Requesting new mining task...".cyan());
     
-    let tx = contract
+    // 获取当前gas价格
+    let gas_price = match contract.client().get_gas_price().await {
+        Ok(price) => {
+            println!("{}", format!("获取到当前gas价格: {} gwei", ethers::utils::format_units(price, "gwei")?).green());
+            price
+        },
+        Err(e) => {
+            println!("{}", format!("获取gas价格失败，使用默认值: {}", e).yellow());
+            U256::from(20_000_000_000u64) // 20 gwei 默认值
+        }
+    };
+    
+    // 估算gas限制
+    let gas_limit = match contract.request_mining_task().estimate_gas().await {
+        Ok(limit) => {
+            let adjusted_limit = limit.saturating_mul(110).div(100); // 增加10%余量
+            println!("{}", format!("估算gas限制: {}, 调整后: {}", limit, adjusted_limit).green());
+            adjusted_limit
+        },
+        Err(e) => {
+            println!("{}", format!("估算gas限制失败，使用默认值: {}", e).yellow());
+            U256::from(300_000u64) // 使用默认值
+        }
+    };
+    
+    // 发送交易
+    let tx_result = contract
         .request_mining_task()
+        .gas(gas_limit)
+        .gas_price(gas_price)
         .send()
-        .await?
-        .await?
-        .ok_or_else(|| anyhow!("交易失败 / Transaction failed"))?;
+        .await;
+        
+    let tx = match tx_result {
+        Ok(pending_tx) => {
+            match pending_tx.await {
+                Ok(Some(receipt)) => receipt,
+                Ok(None) => return Err(anyhow!("交易没有收据 / Transaction has no receipt")),
+                Err(e) => {
+                    let err_msg = format!("交易确认失败 / Transaction confirmation failed: {:?}", e);
+                    if let Some(contract_err) = e.as_contract_error() {
+                        return Err(anyhow!("合约错误 / Contract error: {}", contract_err));
+                    }
+                    return Err(anyhow!(err_msg));
+                }
+            }
+        },
+        Err(e) => {
+            let err_msg = format!("交易发送失败 / Transaction send failed: {:?}", e);
+            if let Some(contract_err) = e.as_contract_error() {
+                return Err(anyhow!("合约错误 / Contract error: {}", contract_err));
+            }
+            return Err(anyhow!(err_msg));
+        }
+    };
         
     println!(
         "{}",
@@ -286,12 +341,61 @@ async fn mine_once<M: Middleware + 'static>(
     // 提交解决方案
     println!("{}", "提交解决方案 / Submitting solution...".cyan());
     
-    let submit_tx = contract
+    // 获取当前gas价格（提交时再次更新）
+    let gas_price = match contract.client().get_gas_price().await {
+        Ok(price) => {
+            println!("{}", format!("获取到当前gas价格: {} gwei", ethers::utils::format_units(price, "gwei")?).green());
+            price
+        },
+        Err(e) => {
+            println!("{}", format!("获取gas价格失败，使用默认值: {}", e).yellow());
+            U256::from(20_000_000_000u64) // 20 gwei 默认值
+        }
+    };
+    
+    // 估算提交解决方案的gas限制
+    let submit_gas_limit = match contract.submit_mining_result(solution).estimate_gas().await {
+        Ok(limit) => {
+            let adjusted_limit = limit.saturating_mul(110).div(100); // 增加10%余量
+            println!("{}", format!("估算提交gas限制: {}, 调整后: {}", limit, adjusted_limit).green());
+            adjusted_limit
+        },
+        Err(e) => {
+            println!("{}", format!("估算提交gas限制失败，使用默认值: {}", e).yellow());
+            U256::from(300_000u64) // 使用默认值
+        }
+    };
+    
+    // 发送提交交易
+    let submit_result = contract
         .submit_mining_result(solution)
+        .gas(submit_gas_limit)
+        .gas_price(gas_price)
         .send()
-        .await?
-        .await?
-        .ok_or_else(|| anyhow!("提交交易失败 / Submission transaction failed"))?;
+        .await;
+        
+    let submit_tx = match submit_result {
+        Ok(pending_tx) => {
+            match pending_tx.await {
+                Ok(Some(receipt)) => receipt,
+                Ok(None) => return Err(anyhow!("提交交易没有收据 / Submission transaction has no receipt")),
+                Err(e) => {
+                    let err_msg = format!("提交交易确认失败 / Submission confirmation failed: {:?}", e);
+                    if let Some(contract_err) = e.as_contract_error() {
+                        return Err(anyhow!("提交合约错误 / Submission contract error: {}", contract_err));
+                    }
+                    return Err(anyhow!(err_msg));
+                }
+            }
+        },
+        Err(e) => {
+            let err_msg = format!("提交交易发送失败 / Submission transaction send failed: {:?}", e);
+            if let Some(contract_err) = e.as_contract_error() {
+                return Err(anyhow!("提交合约错误 / Submission contract error: {}", contract_err));
+            }
+            return Err(anyhow!(err_msg));
+        }
+    };
         
     println!(
         "{}",
