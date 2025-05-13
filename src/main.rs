@@ -294,7 +294,6 @@ async fn start_mining_loop<M: Middleware + 'static>(
     println!("{}", format!("并行任务数 / Parallel tasks: {}", PARALLEL_TASKS).cyan());
     println!("{}", "按 Ctrl+C 停止挖矿 / Press Ctrl+C to stop mining".yellow());
     
-    let mut retry_count = 0;
     let total_mined = Arc::new(AtomicU64::new(0));
     
     loop {
@@ -314,7 +313,6 @@ async fn start_mining_loop<M: Middleware + 'static>(
             let active_tasks_clone = active_tasks.clone();
             let completed_tasks_clone = completed_tasks.clone();
             let total_mined_clone = total_mined.clone();
-            let stop_mining_clone = stop_mining.clone();
             
             // 如果启用了监控，添加任务到监控数据
             if MONITOR_ENABLED.load(Ordering::SeqCst) {

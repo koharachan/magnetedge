@@ -19,7 +19,7 @@ use tui::{
     Frame, Terminal,
 };
 use chrono::{DateTime, Local};
-use sysinfo::{System, SystemExt, ProcessExt, ComponentExt};
+use sysinfo::{System, SystemExt, ProcessExt, ComponentExt, CpuExt};
 use std::collections::VecDeque;
 
 // 监控数据结构
