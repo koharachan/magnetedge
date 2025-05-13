@@ -1063,30 +1063,29 @@ fn encode_packed(tokens: &[Token]) -> Result<Vec<u8>> {
 async fn get_next_nonce<M: Middleware + 'static>(
     client: &SignerMiddleware<M, LocalWallet>,
 ) -> Result<U256> {
-    let next_nonce;
+    // 检查是否已初始化
+    let current_nonce_opt = {
+        let nonce_guard = CURRENT_NONCE.lock().unwrap();
+        *nonce_guard
+    };
 
-    {
-        let mut nonce_guard = CURRENT_NONCE.lock().unwrap();
-
-        next_nonce = match *nonce_guard {
-            Some(current) => current + 1,
-            None => {
-                // 如果尚未初始化，先释放锁然后从链上获取nonce
-                drop(nonce_guard);
-                let chain_nonce = client.get_transaction_count(client.address(), None).await?;
-
-                // 获取完毕后再次锁定并保存nonce
-                let mut nonce_guard = CURRENT_NONCE.lock().unwrap();
-                *nonce_guard = Some(chain_nonce);
-                chain_nonce
-            }
-        };
-
-        // 如果已经有值，更新并释放锁
-        if next_nonce != U256::zero() {
-            *nonce_guard = Some(next_nonce);
+    // 根据初始化状态进行处理
+    let next_nonce = match current_nonce_opt {
+        Some(current_nonce) => {
+            // 已初始化，增加nonce值并更新
+            let next = current_nonce + 1;
+            let mut nonce_guard = CURRENT_NONCE.lock().unwrap();
+            *nonce_guard = Some(next);
+            next
         }
-    }
+        None => {
+            // 未初始化，从链上获取
+            let chain_nonce = client.get_transaction_count(client.address(), None).await?;
+            let mut nonce_guard = CURRENT_NONCE.lock().unwrap();
+            *nonce_guard = Some(chain_nonce);
+            chain_nonce
+        }
+    };
 
     Ok(next_nonce)
 }
@@ -1096,19 +1095,22 @@ async fn initialize_nonce<M: Middleware + 'static>(
     client: &SignerMiddleware<M, LocalWallet>,
 ) -> Result<()> {
     // 检查是否需要初始化
-    let need_init;
-    {
+    let need_init = {
         let nonce_guard = CURRENT_NONCE.lock().unwrap();
-        need_init = nonce_guard.is_none();
-    }
+        nonce_guard.is_none()
+    };
 
     // 如果需要初始化，则从链上获取nonce
     if need_init {
+        // 从链上获取，不持有锁
         let chain_nonce = client.get_transaction_count(client.address(), None).await?;
 
-        // 获取完毕后再次锁定并保存nonce
-        let mut nonce_guard = CURRENT_NONCE.lock().unwrap();
-        *nonce_guard = Some(chain_nonce);
+        // 获取完毕后锁定并保存nonce
+        {
+            let mut nonce_guard = CURRENT_NONCE.lock().unwrap();
+            *nonce_guard = Some(chain_nonce);
+        }
+
         println!(
             "初始化nonce: {} / Initialized nonce: {}",
             chain_nonce, chain_nonce
