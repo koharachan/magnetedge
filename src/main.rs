@@ -540,7 +540,7 @@ async fn mine_once<M: Middleware + 'static>(
         };
 
         // 创建交易请求并手动设置nonce
-        let mut tx = contract.request_mining_task();
+        let tx = contract.request_mining_task();
         let mut tx_request = tx.tx;
         tx_request.set_nonce(next_nonce);
 
@@ -706,7 +706,7 @@ async fn mine_once<M: Middleware + 'static>(
         };
 
         // 创建交易请求并手动设置nonce
-        let mut tx = contract.submit_mining_result(solution);
+        let tx = contract.submit_mining_result(solution);
         let mut tx_request = tx.tx;
         tx_request.set_nonce(next_nonce);
 
@@ -1063,19 +1063,30 @@ fn encode_packed(tokens: &[Token]) -> Result<Vec<u8>> {
 async fn get_next_nonce<M: Middleware + 'static>(
     client: &SignerMiddleware<M, LocalWallet>,
 ) -> Result<U256> {
-    let mut nonce_guard = CURRENT_NONCE.lock().unwrap();
+    let next_nonce;
 
-    let next_nonce = match *nonce_guard {
-        Some(current) => current + 1,
-        None => {
-            // 如果尚未初始化，则从链上获取当前nonce
-            let chain_nonce = client.get_transaction_count(client.address(), None).await?;
-            chain_nonce
+    {
+        let mut nonce_guard = CURRENT_NONCE.lock().unwrap();
+
+        next_nonce = match *nonce_guard {
+            Some(current) => current + 1,
+            None => {
+                // 如果尚未初始化，先释放锁然后从链上获取nonce
+                drop(nonce_guard);
+                let chain_nonce = client.get_transaction_count(client.address(), None).await?;
+
+                // 获取完毕后再次锁定并保存nonce
+                let mut nonce_guard = CURRENT_NONCE.lock().unwrap();
+                *nonce_guard = Some(chain_nonce);
+                chain_nonce
+            }
+        };
+
+        // 如果已经有值，更新并释放锁
+        if next_nonce != U256::zero() {
+            *nonce_guard = Some(next_nonce);
         }
-    };
-
-    // 更新存储的nonce
-    *nonce_guard = Some(next_nonce);
+    }
 
     Ok(next_nonce)
 }
@@ -1084,17 +1095,26 @@ async fn get_next_nonce<M: Middleware + 'static>(
 async fn initialize_nonce<M: Middleware + 'static>(
     client: &SignerMiddleware<M, LocalWallet>,
 ) -> Result<()> {
-    // 仅在尚未初始化时获取nonce
-    let mut nonce_guard = CURRENT_NONCE.lock().unwrap();
-    if nonce_guard.is_none() {
-        // 从链上获取当前nonce
+    // 检查是否需要初始化
+    let need_init;
+    {
+        let nonce_guard = CURRENT_NONCE.lock().unwrap();
+        need_init = nonce_guard.is_none();
+    }
+
+    // 如果需要初始化，则从链上获取nonce
+    if need_init {
         let chain_nonce = client.get_transaction_count(client.address(), None).await?;
+
+        // 获取完毕后再次锁定并保存nonce
+        let mut nonce_guard = CURRENT_NONCE.lock().unwrap();
         *nonce_guard = Some(chain_nonce);
         println!(
             "初始化nonce: {} / Initialized nonce: {}",
             chain_nonce, chain_nonce
         );
     }
+
     Ok(())
 }
 
