@@ -47,6 +47,7 @@ const CHAIN_ID: u64 = 114514; // 修正为正确的链ID
 lazy_static::lazy_static! {
     static ref MONITOR_DATA: Arc<MonitorData> = Arc::new(MonitorData::new());
     static ref MONITOR_ENABLED: AtomicBool = AtomicBool::new(false);
+    static ref CURRENT_NONCE: std::sync::Mutex<Option<U256>> = std::sync::Mutex::new(None);
 }
 
 #[tokio::main]
@@ -410,7 +411,24 @@ async fn mine_once<M: Middleware + 'static>(
     
     // 请求挖矿任务
     loop {
-        match contract.request_mining_task().send().await {
+        // 获取下一个nonce值
+        let nonce = match get_next_nonce(contract.client()).await {
+            Ok(n) => n,
+            Err(e) => {
+                let result = handle_mining_error(anyhow!("任务 #{}: 获取nonce失败 / Task #{}: Failed to get nonce: {}", task_id, task_id, e), &mut retry_count).await;
+                if result.is_err() {
+                    return result;
+                }
+                continue;
+            }
+        };
+        
+        // 构建交易并设置nonce
+        let tx = contract.request_mining_task();
+        let tx = tx.tx.set_nonce(nonce);
+        
+        // 发送交易
+        match tx.send().await {
             Ok(tx) => {
                 let tx_hash = tx.tx_hash();
                 println!(
@@ -481,12 +499,11 @@ async fn mine_once<M: Middleware + 'static>(
     let pb = ProgressBar::new(100);
     pb.set_style(
         ProgressStyle::default_bar()
-            .template(
-                "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}% (预计 {eta}) / {spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}% (ETA {eta})",
-            )
+            .template("任务 #{msg} 挖矿中: [{elapsed_precise}] [{bar:40.cyan/blue}] {percent}%")
             .unwrap()
             .progress_chars("#>-"),
     );
+    pb.set_message(format!("{}", task_id));
     
     // 超时检查
     let start_time = Instant::now();
@@ -531,7 +548,24 @@ async fn mine_once<M: Middleware + 'static>(
     // 提交结果
     retry_count = 0;
     loop {
-        match contract.submit_mining_result(solution).send().await {
+        // 获取下一个nonce值
+        let nonce = match get_next_nonce(contract.client()).await {
+            Ok(n) => n,
+            Err(e) => {
+                let result = handle_mining_error(anyhow!("任务 #{}: 获取nonce失败 / Task #{}: Failed to get nonce: {}", task_id, task_id, e), &mut retry_count).await;
+                if result.is_err() {
+                    return result;
+                }
+                continue;
+            }
+        };
+        
+        // 构建交易并设置nonce
+        let tx = contract.submit_mining_result(solution);
+        let tx = tx.tx.set_nonce(nonce);
+        
+        // 发送交易
+        match tx.send().await {
             Ok(tx) => {
                 let tx_hash = tx.tx_hash();
                 println!(
@@ -634,9 +668,7 @@ async fn mine_solution(nonce: U256, address: Address, difficulty: U256, task_id:
     let pb = ProgressBar::new(100);
     pb.set_style(
         ProgressStyle::default_bar()
-            .template(
-                "任务 #{} 挖矿中 / Task #{} Mining: {spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {percent}% ({per_sec}) / {spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {percent}% ({per_sec})",
-            )
+            .template("任务 #{msg} 挖矿中: [{elapsed_precise}] [{bar:40.cyan/blue}] {percent}%")
             .unwrap()
             .progress_chars("#>-"),
     );
@@ -857,4 +889,23 @@ fn encode_packed(tokens: &[Token]) -> Result<Vec<u8>> {
     }
     
     Ok(result)
+}
+
+// 获取下一个nonce值
+async fn get_next_nonce<M: Middleware + 'static>(client: &SignerMiddleware<M, LocalWallet>) -> Result<U256> {
+    let mut nonce_guard = CURRENT_NONCE.lock().unwrap();
+    
+    let next_nonce = match *nonce_guard {
+        Some(current) => current + 1,
+        None => {
+            // 如果尚未初始化，则从链上获取当前nonce
+            let chain_nonce = client.get_transaction_count(client.address(), None).await?;
+            chain_nonce
+        }
+    };
+    
+    // 更新存储的nonce
+    *nonce_guard = Some(next_nonce);
+    
+    Ok(next_nonce)
 } 
