@@ -147,7 +147,7 @@ async fn main() -> Result<()> {
     check_contract_balance(&contract).await?;
 
     // 初始化nonce
-    initialize_nonce(contract.client()).await?;
+    initialize_nonce(&contract.client()).await?;
 
     // 开始挖矿循环
     println!("{}", "\n挖矿模式 / Mining Mode:".bold());
@@ -519,7 +519,7 @@ async fn mine_once<M: Middleware + 'static>(
     // 请求挖矿任务
     loop {
         // 获取下一个nonce值并创建交易的自定义发送逻辑
-        let next_nonce = match get_next_nonce(contract.client()).await {
+        let next_nonce = match get_next_nonce(&contract.client()).await {
             Ok(n) => n,
             Err(e) => {
                 let result = handle_mining_error(
@@ -685,7 +685,7 @@ async fn mine_once<M: Middleware + 'static>(
     retry_count = 0;
     loop {
         // 获取下一个nonce值
-        let next_nonce = match get_next_nonce(contract.client()).await {
+        let next_nonce = match get_next_nonce(&contract.client()).await {
             Ok(n) => n,
             Err(e) => {
                 let result = handle_mining_error(
@@ -715,8 +715,8 @@ async fn mine_once<M: Middleware + 'static>(
             Ok(tx) => {
                 let tx_hash = tx.tx_hash();
                 println!(
-        "{}",
-        format!(
+                    "{}",
+                    format!(
                         "任务 #{}: 已发送提交挖矿结果交易 / Task #{}: Sent submit mining result tx: {} (nonce: {})",
                         task_id, task_id, tx_hash, next_nonce
                     )
@@ -732,9 +732,9 @@ async fn mine_once<M: Middleware + 'static>(
                                     format!(
                                         "任务 #{}: 提交挖矿结果交易已确认，获得奖励！/ Task #{}: Submit mining result tx confirmed, reward received!",
                                         task_id, task_id
-        )
-        .green()
-    );
+                                    )
+                                    .green()
+                                );
 
                                 // 解析事件以获取奖励数量
                                 if let Some(logs) = receipt.logs.iter().find(|log| {
@@ -745,16 +745,16 @@ async fn mine_once<M: Middleware + 'static>(
                                     if logs.data.0.len() >= 32 {
                                         let reward = U256::from_big_endian(&logs.data.0[0..32]);
                                         println!(
-        "{}",
-        format!(
+                                            "{}",
+                                            format!(
                                                 "任务 #{}: 挖矿奖励: {} MAG / Task #{}: Mining reward: {} MAG",
                                                 task_id,
                                                 ethers::utils::format_ether(reward),
                                                 task_id,
                                                 ethers::utils::format_ether(reward)
-        )
-        .green()
-    );
+                                            )
+                                            .green()
+                                        );
                                     }
                                 }
 

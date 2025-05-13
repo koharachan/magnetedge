@@ -1,8 +1,10 @@
+use chrono::{DateTime, Local};
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use std::collections::VecDeque;
 use std::{
     io,
     sync::{
@@ -11,6 +13,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
+use sysinfo::{ComponentExt, CpuExt, System, SystemExt};
 use tui::{
     backend::{Backend, CrosstermBackend},
     layout::{Constraint, Direction, Layout, Rect},
@@ -18,9 +21,6 @@ use tui::{
     widgets::{Block, Borders, Gauge, List, ListItem, Paragraph},
     Frame, Terminal,
 };
-use chrono::{DateTime, Local};
-use sysinfo::{System, SystemExt, ProcessExt, ComponentExt, CpuExt};
-use std::collections::VecDeque;
 
 // 监控数据结构
 pub struct MonitorData {
@@ -85,7 +85,7 @@ impl MonitorData {
     pub fn update_balance(&self, balance: f64) {
         let mut wallet_balance = self.wallet_balance.lock().unwrap();
         *wallet_balance = balance;
-        
+
         let mut history = self.balance_history.lock().unwrap();
         history.push_back((Local::now(), balance));
         if history.len() > 10 {
@@ -119,7 +119,11 @@ impl MonitorData {
     pub fn complete_task(&self, id: usize, success: bool) {
         let mut tasks = self.task_progresses.lock().unwrap();
         if let Some(task) = tasks.iter_mut().find(|t| t.id == id) {
-            task.status = if success { TaskStatus::Completed } else { TaskStatus::Failed };
+            task.status = if success {
+                TaskStatus::Completed
+            } else {
+                TaskStatus::Failed
+            };
             task.end_time = Some(Local::now());
             if success {
                 self.completed_tasks.fetch_add(1, Ordering::SeqCst);
@@ -135,7 +139,7 @@ impl MonitorData {
         let cpu_usage = system.global_cpu_info().cpu_usage() as f64;
         let memory_used = system.used_memory();
         let memory_total = system.total_memory();
-        
+
         // 获取温度
         let temperature = system.components().first().map(|comp| comp.temperature());
 
@@ -181,7 +185,7 @@ impl TuiApp {
             let timeout = tick_rate
                 .checked_sub(last_tick.elapsed())
                 .unwrap_or_else(|| Duration::from_secs(0));
-                
+
             if event::poll(timeout)? {
                 if let Event::Key(key) = event::read()? {
                     match key.code {
@@ -191,12 +195,12 @@ impl TuiApp {
                             if key.modifiers == event::KeyModifiers::CONTROL {
                                 self.should_quit = true;
                             }
-                        },
+                        }
                         _ => {}
                     }
                 }
             }
-            
+
             if last_tick.elapsed() >= tick_rate {
                 last_tick = Instant::now();
                 // 更新系统信息
@@ -238,7 +242,11 @@ impl TuiApp {
 
         // 标题
         let title = Paragraph::new("Magnet POW 挖矿监控 (按 'q' 退出)")
-            .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+            .style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )
             .block(Block::default().borders(Borders::ALL));
         f.render_widget(title, chunks[0]);
 
@@ -254,18 +262,20 @@ impl TuiApp {
 
     fn render_system_info<B: Backend>(&self, f: &mut Frame<B>, area: Rect) {
         let sys_info = self.data.system_info.lock().unwrap();
-        
+
         let system_info = vec![
             format!("CPU利用率: {:.1}%", sys_info.cpu_usage),
             format!("最大线程数: {}", sys_info.max_threads),
             format!(
-                "内存使用: {:.1}GB / {:.1}GB", 
+                "内存使用: {:.1}GB / {:.1}GB",
                 sys_info.memory_used as f64 / 1024.0 / 1024.0 / 1024.0,
                 sys_info.memory_total as f64 / 1024.0 / 1024.0 / 1024.0
             ),
             format!(
-                "温度: {}", 
-                sys_info.temperature.map_or("不可用".to_string(), |t| format!("{:.1}°C", t))
+                "温度: {}",
+                sys_info
+                    .temperature
+                    .map_or("不可用".to_string(), |t| format!("{:.1}°C", t))
             ),
         ];
 
@@ -287,7 +297,7 @@ impl TuiApp {
         let completed = self.data.completed_tasks.load(Ordering::SeqCst);
 
         let stats = Paragraph::new(format!(
-            "在线任务: {}  处理中: {}  已完成: {}", 
+            "在线任务: {}  处理中: {}  已完成: {}",
             online, processing, completed
         ))
         .block(Block::default().title("任务统计").borders(Borders::ALL))
@@ -356,11 +366,7 @@ impl TuiApp {
         let history_items: Vec<ListItem> = history
             .iter()
             .map(|(time, balance)| {
-                ListItem::new(format!(
-                    "{}: {:.6} MAG",
-                    time.format("%H:%M:%S"),
-                    balance
-                ))
+                ListItem::new(format!("{}: {:.6} MAG", time.format("%H:%M:%S"), balance))
             })
             .collect();
 
@@ -380,13 +386,13 @@ pub fn start_tui(data: Arc<MonitorData>) -> io::Result<()> {
 pub fn start_monitor() -> Arc<MonitorData> {
     let data = Arc::new(MonitorData::new());
     let data_clone = Arc::clone(&data);
-    
+
     // 在新线程中启动TUI
     std::thread::spawn(move || {
         if let Err(err) = start_tui(data_clone) {
             eprintln!("TUI错误: {:?}", err);
         }
     });
-    
+
     data
-} 
+}
