@@ -24,6 +24,11 @@ futures = "0.3"
 rand = "0.8"
 clap = { version = "4.3", features = ["derive"] }
 num_cpus = "1.16"
+# TUI相关依赖
+tui = "0.19"
+crossterm = "0.26"
+sysinfo = "0.29"
+chrono = "0.4"
 
 [profile.release]
 opt-level = 3
