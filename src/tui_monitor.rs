@@ -1,12 +1,12 @@
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use std::{
     io,
     sync::{
-        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicUsize, Ordering},
         Arc, Mutex,
     },
     time::{Duration, Instant},
@@ -15,13 +15,11 @@ use tui::{
     backend::{Backend, CrosstermBackend},
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::{Span, Spans},
-    widgets::{Block, Borders, Gauge, List, ListItem, Paragraph, Tabs},
+    widgets::{Block, Borders, Gauge, List, ListItem, Paragraph},
     Frame, Terminal,
 };
 use chrono::{DateTime, Local};
-use sysinfo::{System, SystemExt, ProcessorExt, ComponentExt};
-use ethers::prelude::*;
+use sysinfo::{System, SystemExt, ProcessExt, ComponentExt};
 use std::collections::VecDeque;
 
 // 监控数据结构
@@ -43,6 +41,7 @@ pub struct TaskProgress {
     pub end_time: Option<DateTime<Local>>,
 }
 
+#[derive(PartialEq)]
 pub enum TaskStatus {
     Waiting,
     Processing,
@@ -133,7 +132,7 @@ impl MonitorData {
         let mut system = System::new_all();
         system.refresh_all();
 
-        let cpu_usage = system.global_processor_info().cpu_usage() as f64;
+        let cpu_usage = system.global_cpu_info().cpu_usage() as f64;
         let memory_used = system.used_memory();
         let memory_total = system.total_memory();
         

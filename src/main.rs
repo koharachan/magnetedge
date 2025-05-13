@@ -369,7 +369,7 @@ async fn start_mining_loop<M: Middleware + 'static>(
         // 每隔一段时间检查一下余额
         let completed = completed_tasks.load(Ordering::SeqCst);
         if completed > 0 && completed % 10 == 0 {
-            match check_wallet_balance(contract.client()).await {
+            match check_wallet_balance(&contract.client()).await {
                 Ok(_) => {},
                 Err(e) => {
                     eprintln!("{}", format!("检查余额错误 / Balance check error: {}", e).yellow());
@@ -685,7 +685,6 @@ async fn mine_solution(nonce: U256, address: Address, difficulty: U256, task_id:
                     
                     // 计算哈希
                     let hash = keccak256(packed_with_guess);
-                    let hash_value = U256::from_big_endian(&hash);
                     
                     // 转换为 BigUint 以进行比较
                     let hash_biguint = BigUint::from_bytes_be(&hash);

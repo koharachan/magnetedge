@@ -29,6 +29,7 @@ tui = "0.19"
 crossterm = "0.26"
 sysinfo = "0.29"
 chrono = "0.4"
+ctrlc = "3.4"
 
 [profile.release]
 opt-level = 3
