@@ -126,6 +126,9 @@ async fn main() -> Result<()> {
     // 检查合约余额
     check_contract_balance(&contract).await?;
     
+    // 初始化nonce
+    initialize_nonce(contract.client()).await?;
+    
     // 开始挖矿循环
     println!("{}", "\n挖矿模式 / Mining Mode:".bold());
     println!("{}", "免费挖矿 (3 MAG 每次哈希) / Free Mining (3 MAG per hash)".cyan());
@@ -411,8 +414,8 @@ async fn mine_once<M: Middleware + 'static>(
     
     // 请求挖矿任务
     loop {
-        // 获取下一个nonce值
-        let nonce = match get_next_nonce(contract.client()).await {
+        // 获取下一个nonce值并创建交易的自定义发送逻辑
+        let next_nonce = match get_next_nonce(contract.client()).await {
             Ok(n) => n,
             Err(e) => {
                 let result = handle_mining_error(anyhow!("任务 #{}: 获取nonce失败 / Task #{}: Failed to get nonce: {}", task_id, task_id, e), &mut retry_count).await;
@@ -423,19 +426,20 @@ async fn mine_once<M: Middleware + 'static>(
             }
         };
         
-        // 构建交易并设置nonce
-        let tx = contract.request_mining_task();
-        let tx = tx.tx.set_nonce(nonce);
+        // 创建交易请求并手动设置nonce
+        let mut tx = contract.request_mining_task();
+        let mut tx_request = tx.tx;
+        tx_request.set_nonce(next_nonce);
         
-        // 发送交易
-        match tx.send().await {
+        // 手动发送带有nonce的交易
+        match contract.client().send_transaction(tx_request, None).await {
             Ok(tx) => {
                 let tx_hash = tx.tx_hash();
                 println!(
                     "{}",
                     format!(
-                        "任务 #{}: 已发送请求挖矿任务交易 / Task #{}: Sent request mining task tx: {}",
-                        task_id, task_id, tx_hash
+                        "任务 #{}: 已发送请求挖矿任务交易 / Task #{}: Sent request mining task tx: {} (nonce: {})",
+                        task_id, task_id, tx_hash, next_nonce
                     )
                     .cyan()
                 );
@@ -549,7 +553,7 @@ async fn mine_once<M: Middleware + 'static>(
     retry_count = 0;
     loop {
         // 获取下一个nonce值
-        let nonce = match get_next_nonce(contract.client()).await {
+        let next_nonce = match get_next_nonce(contract.client()).await {
             Ok(n) => n,
             Err(e) => {
                 let result = handle_mining_error(anyhow!("任务 #{}: 获取nonce失败 / Task #{}: Failed to get nonce: {}", task_id, task_id, e), &mut retry_count).await;
@@ -560,19 +564,20 @@ async fn mine_once<M: Middleware + 'static>(
             }
         };
         
-        // 构建交易并设置nonce
-        let tx = contract.submit_mining_result(solution);
-        let tx = tx.tx.set_nonce(nonce);
+        // 创建交易请求并手动设置nonce
+        let mut tx = contract.submit_mining_result(solution);
+        let mut tx_request = tx.tx;
+        tx_request.set_nonce(next_nonce);
         
-        // 发送交易
-        match tx.send().await {
+        // 手动发送带有nonce的交易
+        match contract.client().send_transaction(tx_request, None).await {
             Ok(tx) => {
                 let tx_hash = tx.tx_hash();
                 println!(
                     "{}",
                     format!(
-                        "任务 #{}: 已发送提交挖矿结果交易 / Task #{}: Sent submit mining result tx: {}",
-                        task_id, task_id, tx_hash
+                        "任务 #{}: 已发送提交挖矿结果交易 / Task #{}: Sent submit mining result tx: {} (nonce: {})",
+                        task_id, task_id, tx_hash, next_nonce
                     )
                     .cyan()
                 );
@@ -908,4 +913,30 @@ async fn get_next_nonce<M: Middleware + 'static>(client: &SignerMiddleware<M, Lo
     *nonce_guard = Some(next_nonce);
     
     Ok(next_nonce)
+}
+
+// 初始化全局nonce
+async fn initialize_nonce<M: Middleware + 'static>(client: &SignerMiddleware<M, LocalWallet>) -> Result<()> {
+    // 仅在尚未初始化时获取nonce
+    let mut nonce_guard = CURRENT_NONCE.lock().unwrap();
+    if nonce_guard.is_none() {
+        // 从链上获取当前nonce
+        let chain_nonce = client.get_transaction_count(client.address(), None).await?;
+        *nonce_guard = Some(chain_nonce);
+        println!("初始化nonce: {} / Initialized nonce: {}", chain_nonce, chain_nonce);
+    }
+    Ok(())
+}
+
+// 获取并增加nonce
+fn increment_nonce() -> Result<U256> {
+    let mut nonce_guard = CURRENT_NONCE.lock().unwrap();
+    
+    if let Some(current_nonce) = *nonce_guard {
+        let next_nonce = current_nonce + 1;
+        *nonce_guard = Some(next_nonce);
+        Ok(next_nonce)
+    } else {
+        Err(anyhow!("Nonce未初始化 / Nonce not initialized"))
+    }
 } 
