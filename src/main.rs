@@ -2,10 +2,10 @@ use anyhow::{anyhow, Result};
 use colored::*;
 use dialoguer::{Input, Select};
 use ethers::{
+    abi::Token,
     prelude::*,
     providers::{Http, Provider},
     utils::keccak256,
-    abi::Token,
 };
 use futures::future::join_all;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -24,7 +24,7 @@ mod contract;
 mod tui_monitor;
 
 use contract::MiningContract;
-use tui_monitor::{MonitorData, start_monitor};
+use tui_monitor::{start_monitor, MonitorData};
 
 // 定义常量
 const CONTRACT_ADDRESS: &str = "0x51e0ab7f7db4a2bf4500dfa59f7a4957afc8c02e";
@@ -38,9 +38,9 @@ const MIN_WALLET_BALANCE: f64 = 0.1;
 const MIN_CONTRACT_BALANCE: f64 = 3.0;
 const MAX_RETRIES: usize = 5;
 const MINING_TIMEOUT_SECS: u64 = 600; // 10分钟
-// 并行任务数
+                                      // 并行任务数
 const PARALLEL_TASKS: usize = 3; // 同时处理的任务数量
-// MagnetChain的chainId
+                                 // MagnetChain的chainId
 const CHAIN_ID: u64 = 114514; // 修正为正确的链ID
 
 // 全局变量
@@ -55,20 +55,20 @@ async fn main() -> Result<()> {
     // 处理命令行参数
     let args: Vec<String> = std::env::args().collect();
     let mut monitor_mode = false;
-    
+
     for arg in args.iter() {
         if arg == "h" || arg == "--monitor" {
             monitor_mode = true;
             break;
         }
     }
-    
+
     if monitor_mode {
         // 启动监控模式
         MONITOR_ENABLED.store(true, Ordering::SeqCst);
         let monitor_data = start_monitor();
         std::mem::forget(monitor_data); // 防止数据被释放
-        
+
         // 循环等待用户输入退出命令
         println!("已进入监控模式，按 'exit' 退出");
         loop {
@@ -80,94 +80,148 @@ async fn main() -> Result<()> {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        
+
         println!("正在退出监控模式...");
         return Ok(());
     }
-    
+
     print_welcome_message();
 
     // 选择RPC节点
     let rpc_url = select_rpc_node()?;
-    println!("{}", format!("已选择 RPC / Selected RPC: {}", rpc_url).green());
+    println!(
+        "{}",
+        format!("已选择 RPC / Selected RPC: {}", rpc_url).green()
+    );
 
     // 初始化以太坊提供者
     let provider = Provider::<Http>::try_from(rpc_url)?;
-    
+
     // 显示链ID信息
     match provider.get_chainid().await {
         Ok(chainid) => {
-            println!("{}", format!("连接到链ID: {} / Connected to chain ID: {}", chainid, chainid).green());
+            println!(
+                "{}",
+                format!(
+                    "连接到链ID: {} / Connected to chain ID: {}",
+                    chainid, chainid
+                )
+                .green()
+            );
             if chainid != U256::from(CHAIN_ID) {
                 println!("{}", format!("警告：检测到的链ID与设置的不符！ / Warning: Detected chain ID does not match configuration!").yellow());
             }
-        },
+        }
         Err(e) => {
-            println!("{}", format!("无法获取链ID: {} / Could not get chain ID: {}", e, e).yellow());
+            println!(
+                "{}",
+                format!("无法获取链ID: {} / Could not get chain ID: {}", e, e).yellow()
+            );
         }
     }
-    
+
     // 输入私钥并创建钱包
     let wallet = input_private_key(provider).await?;
     let wallet_address = wallet.address();
-    println!("{}", format!("钱包地址 / Wallet address: {}", wallet_address).green());
+    println!(
+        "{}",
+        format!("钱包地址 / Wallet address: {}", wallet_address).green()
+    );
 
     // 检查钱包余额
     let balance = check_wallet_balance(&wallet).await?;
-    
+
     if MONITOR_ENABLED.load(Ordering::SeqCst) {
         // 如果启用了监控，更新钱包余额
-        MONITOR_DATA.update_balance(ethers::utils::format_ether(balance).parse::<f64>().unwrap_or(0.0));
+        MONITOR_DATA.update_balance(
+            ethers::utils::format_ether(balance)
+                .parse::<f64>()
+                .unwrap_or(0.0),
+        );
     }
-    
+
     // 初始化合约
     let contract = init_contract(wallet).await?;
-    
+
     // 检查合约余额
     check_contract_balance(&contract).await?;
-    
+
     // 初始化nonce
     initialize_nonce(contract.client()).await?;
-    
+
     // 开始挖矿循环
     println!("{}", "\n挖矿模式 / Mining Mode:".bold());
-    println!("{}", "免费挖矿 (3 MAG 每次哈希) / Free Mining (3 MAG per hash)".cyan());
+    println!(
+        "{}",
+        "免费挖矿 (3 MAG 每次哈希) / Free Mining (3 MAG per hash)".cyan()
+    );
     println!("{}", "\n开始挖矿 / Starting mining...".bold().green());
-    
+
     start_mining_loop(contract).await?;
-    
+
     Ok(())
 }
 
 fn print_welcome_message() {
-    println!("{}", " 你好，欢迎使用 Magnet POW 区块链挖矿客户端！ ".bold().on_cyan().black());
-    println!("{}", " Hello, welcome to Magnet POW Blockchain Mining Client! ".bold().on_cyan().black());
-    println!("{}", "启动挖矿客户端，需要确保钱包里有0.1MAG，如果没有，加入TG群免费领取0.1 MAG空投。".bold().magenta());
+    println!(
+        "{}",
+        " 你好，欢迎使用 Magnet POW 区块链挖矿客户端！ "
+            .bold()
+            .on_cyan()
+            .black()
+    );
+    println!(
+        "{}",
+        " Hello, welcome to Magnet POW Blockchain Mining Client! "
+            .bold()
+            .on_cyan()
+            .black()
+    );
+    println!(
+        "{}",
+        "启动挖矿客户端，需要确保钱包里有0.1MAG，如果没有，加入TG群免费领取0.1 MAG空投。"
+            .bold()
+            .magenta()
+    );
     println!("{}", "To start the mining client, ensure your wallet has 0.1 MAG. If not, join the Telegram group for a free 0.1 MAG airdrop.".bold().magenta());
-    println!("{}", "TG群链接 / Telegram group link: https://t.me/MagnetPOW".bold().magenta());
-    println!("{}", format!("网络信息 / Network Info: 链ID / Chain ID: {}, 货币符号 / Symbol: MAG", CHAIN_ID).cyan());
+    println!(
+        "{}",
+        "TG群链接 / Telegram group link: https://t.me/MagnetPOW"
+            .bold()
+            .magenta()
+    );
+    println!(
+        "{}",
+        format!(
+            "网络信息 / Network Info: 链ID / Chain ID: {}, 货币符号 / Symbol: MAG",
+            CHAIN_ID
+        )
+        .cyan()
+    );
 }
 
 fn select_rpc_node() -> Result<&'static str> {
     println!("{}", "\n选择 RPC 节点 / Select RPC Node:".bold());
-    
+
     for (i, rpc) in RPC_OPTIONS.iter().enumerate() {
         println!("{}", format!("{}. {}", i + 1, rpc).cyan());
     }
-    
+
     let selection = Select::new()
         .with_prompt("选择节点 / Select node")
         .items(&RPC_OPTIONS)
         .default(0)
         .interact()?;
-        
+
     Ok(RPC_OPTIONS[selection])
 }
 
-async fn input_private_key<P: JsonRpcClient + 'static + Clone>(provider: Provider<P>) -> Result<SignerMiddleware<Provider<P>, LocalWallet>> {
+async fn input_private_key<P: JsonRpcClient + 'static + Clone>(
+    provider: Provider<P>,
+) -> Result<SignerMiddleware<Provider<P>, LocalWallet>> {
     let max_attempts = 3;
     let mut attempts = 0;
-    
+
     while attempts < max_attempts {
         let private_key: String = Input::new()
             .with_prompt("\n请输入私钥 / Enter private key (starts with 0x)")
@@ -179,16 +233,23 @@ async fn input_private_key<P: JsonRpcClient + 'static + Clone>(provider: Provide
                 }
             })
             .interact()?;
-            
+
         match private_key.parse::<LocalWallet>() {
             Ok(mut wallet) => {
                 // 设置钱包的chainId
                 wallet = wallet.with_chain_id(CHAIN_ID);
-                println!("{}", format!("已设置钱包chainId为: {} / Set wallet chainId to: {}", CHAIN_ID, CHAIN_ID).green());
-                
+                println!(
+                    "{}",
+                    format!(
+                        "已设置钱包chainId为: {} / Set wallet chainId to: {}",
+                        CHAIN_ID, CHAIN_ID
+                    )
+                    .green()
+                );
+
                 let client = SignerMiddleware::new(provider.clone(), wallet);
                 return Ok(client);
-            },
+            }
             Err(e) => {
                 attempts += 1;
                 eprintln!(
@@ -201,18 +262,22 @@ async fn input_private_key<P: JsonRpcClient + 'static + Clone>(provider: Provide
                     )
                     .red()
                 );
-                
+
                 if attempts == max_attempts {
-                    return Err(anyhow!("达到最大尝试次数，程序退出 / Max attempts reached, exiting."));
+                    return Err(anyhow!(
+                        "达到最大尝试次数，程序退出 / Max attempts reached, exiting."
+                    ));
                 }
             }
         }
     }
-    
+
     Err(anyhow!("无法解析私钥 / Unable to parse private key"))
 }
 
-async fn check_wallet_balance<M: Middleware + 'static>(wallet: &SignerMiddleware<M, LocalWallet>) -> Result<U256> {
+async fn check_wallet_balance<M: Middleware + 'static>(
+    wallet: &SignerMiddleware<M, LocalWallet>,
+) -> Result<U256> {
     let balance = wallet.get_balance(wallet.address(), None).await?;
     println!(
         "{}",
@@ -222,12 +287,16 @@ async fn check_wallet_balance<M: Middleware + 'static>(wallet: &SignerMiddleware
         )
         .green()
     );
-    
+
     // 如果启用了监控，更新钱包余额
     if MONITOR_ENABLED.load(Ordering::SeqCst) {
-        MONITOR_DATA.update_balance(ethers::utils::format_ether(balance).parse::<f64>().unwrap_or(0.0));
+        MONITOR_DATA.update_balance(
+            ethers::utils::format_ether(balance)
+                .parse::<f64>()
+                .unwrap_or(0.0),
+        );
     }
-    
+
     let min_balance = ethers::utils::parse_ether(MIN_WALLET_BALANCE)?;
     if balance < min_balance {
         return Err(anyhow!(
@@ -237,7 +306,7 @@ async fn check_wallet_balance<M: Middleware + 'static>(wallet: &SignerMiddleware
             MIN_WALLET_BALANCE
         ));
     }
-    
+
     Ok(balance)
 }
 
@@ -245,18 +314,23 @@ async fn init_contract<M: Middleware + 'static>(
     wallet: SignerMiddleware<M, LocalWallet>,
 ) -> Result<MiningContract<SignerMiddleware<M, LocalWallet>>> {
     let contract_address = CONTRACT_ADDRESS.parse::<Address>()?;
-    
+
     // 显示当前钱包信息和设置
     println!("{}", format!("钱包信息 / Wallet info:").cyan());
     println!("{}", format!("地址 / Address: {}", wallet.address()).cyan());
     println!("{}", format!("链ID / Chain ID: {}", CHAIN_ID).cyan());
-    println!("{}", format!("合约地址 / Contract address: {}", contract_address).cyan());
-    
+    println!(
+        "{}",
+        format!("合约地址 / Contract address: {}", contract_address).cyan()
+    );
+
     let contract = MiningContract::new(contract_address, Arc::new(wallet));
     Ok(contract)
 }
 
-async fn check_contract_balance<M: Middleware + 'static>(contract: &MiningContract<M>) -> Result<U256> {
+async fn check_contract_balance<M: Middleware + 'static>(
+    contract: &MiningContract<M>,
+) -> Result<U256> {
     let contract_balance = contract.get_contract_balance().call().await?;
     println!(
         "{}",
@@ -266,7 +340,7 @@ async fn check_contract_balance<M: Middleware + 'static>(contract: &MiningContra
         )
         .green()
     );
-    
+
     let min_contract_balance = ethers::utils::parse_ether(MIN_CONTRACT_BALANCE)?;
     if contract_balance < min_contract_balance {
         return Err(anyhow!(
@@ -276,7 +350,7 @@ async fn check_contract_balance<M: Middleware + 'static>(contract: &MiningContra
             MIN_CONTRACT_BALANCE
         ));
     }
-    
+
     Ok(contract_balance)
 }
 
@@ -287,7 +361,7 @@ async fn start_mining_loop<M: Middleware + 'static>(
     let active_tasks = Arc::new(AtomicUsize::new(0));
     let completed_tasks = Arc::new(AtomicUsize::new(0));
     let total_tasks_count = Arc::new(AtomicUsize::new(0));
-    
+
     // Ctrl+C 处理
     let stop_mining_clone = stop_mining.clone();
     ctrlc::set_handler(move || {
@@ -295,40 +369,53 @@ async fn start_mining_loop<M: Middleware + 'static>(
         stop_mining_clone.store(true, Ordering::SeqCst);
     }).expect("Error setting Ctrl-C handler");
 
-    println!("{}", format!("并行任务数 / Parallel tasks: {}", PARALLEL_TASKS).cyan());
-    println!("{}", "按 Ctrl+C 停止挖矿 / Press Ctrl+C to stop mining".yellow());
-    
+    println!(
+        "{}",
+        format!("并行任务数 / Parallel tasks: {}", PARALLEL_TASKS).cyan()
+    );
+    println!(
+        "{}",
+        "按 Ctrl+C 停止挖矿 / Press Ctrl+C to stop mining".yellow()
+    );
+
     let total_mined = Arc::new(AtomicU64::new(0));
-    
+
     loop {
         if stop_mining.load(Ordering::SeqCst) {
             break;
         }
-        
+
         // 检查是否有足够的线程槽用于新任务
         while active_tasks.load(Ordering::SeqCst) < PARALLEL_TASKS {
             if stop_mining.load(Ordering::SeqCst) {
                 break;
             }
-            
+
             let task_id = total_tasks_count.fetch_add(1, Ordering::SeqCst);
             active_tasks.fetch_add(1, Ordering::SeqCst);
             let contract_clone = contract.clone();
             let active_tasks_clone = active_tasks.clone();
             let completed_tasks_clone = completed_tasks.clone();
             let total_mined_clone = total_mined.clone();
-            
+
             // 如果启用了监控，添加任务到监控数据
             if MONITOR_ENABLED.load(Ordering::SeqCst) {
                 MONITOR_DATA.add_task(task_id);
             }
-            
+
             tokio::spawn(async move {
                 let result = mine_once(&contract_clone, task_id).await;
-                
+
                 if let Err(e) = result {
-                    eprintln!("{}", format!("任务 #{} 失败: {} / Task #{} failed: {}", task_id, e, task_id, e).red());
-                    
+                    eprintln!(
+                        "{}",
+                        format!(
+                            "任务 #{} 失败: {} / Task #{} failed: {}",
+                            task_id, e, task_id, e
+                        )
+                        .red()
+                    );
+
                     // 如果启用了监控，更新任务状态为失败
                     if MONITOR_ENABLED.load(Ordering::SeqCst) {
                         MONITOR_DATA.complete_task(task_id, false);
@@ -336,17 +423,25 @@ async fn start_mining_loop<M: Middleware + 'static>(
                 } else {
                     completed_tasks_clone.fetch_add(1, Ordering::SeqCst);
                     total_mined_clone.fetch_add(1, Ordering::SeqCst);
-                    
+
                     // 如果启用了监控，更新任务状态为成功
                     if MONITOR_ENABLED.load(Ordering::SeqCst) {
                         MONITOR_DATA.complete_task(task_id, true);
-                        
+
                         // 更新余额
-                        if let Ok(balance) = contract_clone.client().get_balance(contract_clone.client().address(), None).await {
-                            MONITOR_DATA.update_balance(ethers::utils::format_ether(balance).parse::<f64>().unwrap_or(0.0));
+                        if let Ok(balance) = contract_clone
+                            .client()
+                            .get_balance(contract_clone.client().address(), None)
+                            .await
+                        {
+                            MONITOR_DATA.update_balance(
+                                ethers::utils::format_ether(balance)
+                                    .parse::<f64>()
+                                    .unwrap_or(0.0),
+                            );
                         }
                     }
-                    
+
                     let completed = completed_tasks_clone.load(Ordering::SeqCst);
                     if completed % 5 == 0 {
                         println!(
@@ -359,40 +454,49 @@ async fn start_mining_loop<M: Middleware + 'static>(
                         );
                     }
                 }
-                
+
                 active_tasks_clone.fetch_sub(1, Ordering::SeqCst);
             });
-            
+
             sleep(Duration::from_millis(100)).await;
         }
-        
+
         sleep(Duration::from_millis(500)).await;
-        
+
         // 每隔一段时间检查一下余额
         let completed = completed_tasks.load(Ordering::SeqCst);
         if completed > 0 && completed % 10 == 0 {
             match check_wallet_balance(&contract.client()).await {
-                Ok(_) => {},
+                Ok(_) => {}
                 Err(e) => {
-                    eprintln!("{}", format!("检查余额错误 / Balance check error: {}", e).yellow());
+                    eprintln!(
+                        "{}",
+                        format!("检查余额错误 / Balance check error: {}", e).yellow()
+                    );
                 }
             }
-            
+
             match check_contract_balance(&contract).await {
-                Ok(_) => {},
+                Ok(_) => {}
                 Err(e) => {
-                    eprintln!("{}", format!("检查合约余额错误 / Contract balance check error: {}", e).yellow());
+                    eprintln!(
+                        "{}",
+                        format!("检查合约余额错误 / Contract balance check error: {}", e).yellow()
+                    );
                 }
             }
         }
     }
-    
+
     // 等待所有活跃任务完成
-    println!("{}", "等待活跃任务完成 / Waiting for active tasks to complete...".yellow());
+    println!(
+        "{}",
+        "等待活跃任务完成 / Waiting for active tasks to complete...".yellow()
+    );
     while active_tasks.load(Ordering::SeqCst) > 0 {
         sleep(Duration::from_millis(500)).await;
     }
-    
+
     let completed = completed_tasks.load(Ordering::SeqCst);
     println!(
         "{}",
@@ -402,7 +506,7 @@ async fn start_mining_loop<M: Middleware + 'static>(
         )
         .green()
     );
-    
+
     Ok(())
 }
 
@@ -411,26 +515,35 @@ async fn mine_once<M: Middleware + 'static>(
     task_id: usize,
 ) -> Result<()> {
     let mut retry_count = 0;
-    
+
     // 请求挖矿任务
     loop {
         // 获取下一个nonce值并创建交易的自定义发送逻辑
         let next_nonce = match get_next_nonce(contract.client()).await {
             Ok(n) => n,
             Err(e) => {
-                let result = handle_mining_error(anyhow!("任务 #{}: 获取nonce失败 / Task #{}: Failed to get nonce: {}", task_id, task_id, e), &mut retry_count).await;
+                let result = handle_mining_error(
+                    anyhow!(
+                        "任务 #{}: 获取nonce失败 / Task #{}: Failed to get nonce: {}",
+                        task_id,
+                        task_id,
+                        e
+                    ),
+                    &mut retry_count,
+                )
+                .await;
                 if result.is_err() {
                     return result;
                 }
                 continue;
             }
         };
-        
+
         // 创建交易请求并手动设置nonce
         let mut tx = contract.request_mining_task();
         let mut tx_request = tx.tx;
         tx_request.set_nonce(next_nonce);
-        
+
         // 手动发送带有nonce的交易
         match contract.client().send_transaction(tx_request, None).await {
             Ok(tx) => {
@@ -443,7 +556,7 @@ async fn mine_once<M: Middleware + 'static>(
                     )
                     .cyan()
                 );
-                
+
                 match tx.await {
                     Ok(_) => {
                         println!(
@@ -474,19 +587,28 @@ async fn mine_once<M: Middleware + 'static>(
             }
         }
     }
-    
+
     // 获取挖矿任务
     let (nonce, difficulty, active) = match contract.get_my_task().call().await {
         Ok(task) => task,
         Err(e) => {
-            return Err(anyhow!("任务 #{}: 获取挖矿任务失败 / Task #{}: Failed to get mining task: {}", task_id, task_id, e));
+            return Err(anyhow!(
+                "任务 #{}: 获取挖矿任务失败 / Task #{}: Failed to get mining task: {}",
+                task_id,
+                task_id,
+                e
+            ));
         }
     };
-    
+
     if !active {
-        return Err(anyhow!("任务 #{}: 挖矿任务未激活 / Task #{}: Mining task not active", task_id, task_id));
+        return Err(anyhow!(
+            "任务 #{}: 挖矿任务未激活 / Task #{}: Mining task not active",
+            task_id,
+            task_id
+        ));
     }
-    
+
     println!(
         "{}",
         format!(
@@ -495,10 +617,10 @@ async fn mine_once<M: Middleware + 'static>(
         )
         .green()
     );
-    
+
     // 解决挖矿任务
     let wallet_address = contract.client().address();
-    
+
     // 设置进度条
     let pb = ProgressBar::new(100);
     pb.set_style(
@@ -508,11 +630,11 @@ async fn mine_once<M: Middleware + 'static>(
             .progress_chars("#>-"),
     );
     pb.set_message(format!("{}", task_id));
-    
+
     // 超时检查
     let start_time = Instant::now();
     let timeout = Duration::from_secs(MINING_TIMEOUT_SECS);
-    
+
     // 求解
     let solution = match tokio::time::timeout(
         timeout,
@@ -540,15 +662,25 @@ async fn mine_once<M: Middleware + 'static>(
             }
             Err(e) => {
                 pb.finish_and_clear();
-                return Err(anyhow!("任务 #{}: 解决挖矿任务失败 / Task #{}: Failed to solve mining task: {}", task_id, task_id, e));
+                return Err(anyhow!(
+                    "任务 #{}: 解决挖矿任务失败 / Task #{}: Failed to solve mining task: {}",
+                    task_id,
+                    task_id,
+                    e
+                ));
             }
         },
         Err(_) => {
             pb.finish_and_clear();
-            return Err(anyhow!("任务 #{}: 挖矿超时 / Task #{}: Mining timed out after {} seconds", task_id, task_id, MINING_TIMEOUT_SECS));
+            return Err(anyhow!(
+                "任务 #{}: 挖矿超时 / Task #{}: Mining timed out after {} seconds",
+                task_id,
+                task_id,
+                MINING_TIMEOUT_SECS
+            ));
         }
     };
-    
+
     // 提交结果
     retry_count = 0;
     loop {
@@ -556,32 +688,41 @@ async fn mine_once<M: Middleware + 'static>(
         let next_nonce = match get_next_nonce(contract.client()).await {
             Ok(n) => n,
             Err(e) => {
-                let result = handle_mining_error(anyhow!("任务 #{}: 获取nonce失败 / Task #{}: Failed to get nonce: {}", task_id, task_id, e), &mut retry_count).await;
+                let result = handle_mining_error(
+                    anyhow!(
+                        "任务 #{}: 获取nonce失败 / Task #{}: Failed to get nonce: {}",
+                        task_id,
+                        task_id,
+                        e
+                    ),
+                    &mut retry_count,
+                )
+                .await;
                 if result.is_err() {
                     return result;
                 }
                 continue;
             }
         };
-        
+
         // 创建交易请求并手动设置nonce
         let mut tx = contract.submit_mining_result(solution);
         let mut tx_request = tx.tx;
         tx_request.set_nonce(next_nonce);
-        
+
         // 手动发送带有nonce的交易
         match contract.client().send_transaction(tx_request, None).await {
             Ok(tx) => {
                 let tx_hash = tx.tx_hash();
                 println!(
-                    "{}",
-                    format!(
+        "{}",
+        format!(
                         "任务 #{}: 已发送提交挖矿结果交易 / Task #{}: Sent submit mining result tx: {} (nonce: {})",
                         task_id, task_id, tx_hash, next_nonce
                     )
                     .cyan()
                 );
-                
+
                 match tx.await {
                     Ok(receipt) => {
                         if let Some(receipt) = receipt {
@@ -591,30 +732,32 @@ async fn mine_once<M: Middleware + 'static>(
                                     format!(
                                         "任务 #{}: 提交挖矿结果交易已确认，获得奖励！/ Task #{}: Submit mining result tx confirmed, reward received!",
                                         task_id, task_id
-                                    )
-                                    .green()
-                                );
-                                
+        )
+        .green()
+    );
+
                                 // 解析事件以获取奖励数量
                                 if let Some(logs) = receipt.logs.iter().find(|log| {
-                                    log.topics.len() > 1 && log.topics[0] == keccak256("MiningReward(address,uint256)").into()
+                                    log.topics.len() > 1
+                                        && log.topics[0]
+                                            == keccak256("MiningReward(address,uint256)").into()
                                 }) {
                                     if logs.data.0.len() >= 32 {
                                         let reward = U256::from_big_endian(&logs.data.0[0..32]);
                                         println!(
-                                            "{}",
-                                            format!(
+        "{}",
+        format!(
                                                 "任务 #{}: 挖矿奖励: {} MAG / Task #{}: Mining reward: {} MAG",
                                                 task_id,
                                                 ethers::utils::format_ether(reward),
                                                 task_id,
                                                 ethers::utils::format_ether(reward)
-                                            )
-                                            .green()
-                                        );
+        )
+        .green()
+    );
                                     }
                                 }
-                                
+
                                 return Ok(());
                             } else {
                                 return Err(anyhow!("任务 #{}: 提交挖矿结果交易失败 / Task #{}: Submit mining result tx failed with status: {:?}", task_id, task_id, receipt.status));
@@ -643,12 +786,22 @@ async fn mine_once<M: Middleware + 'static>(
     }
 }
 
-async fn mine_solution(nonce: U256, address: Address, difficulty: U256, task_id: usize) -> Result<U256> {
+async fn mine_solution(
+    nonce: U256,
+    address: Address,
+    difficulty: U256,
+    task_id: usize,
+) -> Result<U256> {
     let difficulty_bytes = difficulty.to_string();
     let difficulty_len = difficulty_bytes.len();
-    let difficulty_biguint = BigUint::parse_bytes(difficulty_bytes.as_bytes(), 10).ok_or_else(|| {
-        anyhow!("任务 #{}: 无法解析难度值 / Task #{}: Cannot parse difficulty", task_id, task_id)
-    })?;
+    let difficulty_biguint =
+        BigUint::parse_bytes(difficulty_bytes.as_bytes(), 10).ok_or_else(|| {
+            anyhow!(
+                "任务 #{}: 无法解析难度值 / Task #{}: Cannot parse difficulty",
+                task_id,
+                task_id
+            )
+        })?;
 
     // 显示估计的哈希次数
     let estimated_hashes = 2u128.pow(difficulty_len as u32 * 4) as f64;
@@ -664,11 +817,11 @@ async fn mine_solution(nonce: U256, address: Address, difficulty: U256, task_id:
     // 并行计算哈希
     let num_cpus = num_cpus::get();
     let mut guesses_per_batch = 100_000; // 每个批次的猜测次数
-    
+
     let mut counter = 0u64;
     let mut last_update = Instant::now();
     let start_time = Instant::now();
-    
+
     // 创建进度条
     let pb = ProgressBar::new(100);
     pb.set_style(
@@ -681,49 +834,49 @@ async fn mine_solution(nonce: U256, address: Address, difficulty: U256, task_id:
 
     let solution_found = Arc::new(AtomicBool::new(false));
     let solution_value = Arc::new(std::sync::Mutex::new(None));
-    
+
     loop {
         if solution_found.load(Ordering::SeqCst) {
             break;
         }
-        
+
         let mut futures = Vec::with_capacity(num_cpus);
-        
+
         for _ in 0..num_cpus {
             let start_value = counter;
             counter += guesses_per_batch as u64;
-            
+
             let nonce_clone = nonce;
             let address_clone = address;
             let difficulty_biguint_clone = difficulty_biguint.clone();
             let solution_found_clone = solution_found.clone();
             let solution_value_clone = solution_value.clone();
-            
+
             let future = tokio::task::spawn_blocking(move || {
                 for i in 0..guesses_per_batch {
                     if solution_found_clone.load(Ordering::SeqCst) {
                         return None;
                     }
-                    
+
                     let guess = U256::from(start_value + i as u64);
-                    
+
                     // 打包数据
                     let packed_data = match solidity_pack_uint_address(nonce_clone, address_clone) {
                         Ok(data) => data,
                         Err(_) => continue,
                     };
-                    
+
                     let packed_with_guess = match solidity_pack_bytes_uint(packed_data, guess) {
                         Ok(data) => data,
                         Err(_) => continue,
                     };
-                    
+
                     // 计算哈希
                     let hash = keccak256(packed_with_guess);
-                    
+
                     // 转换为 BigUint 以进行比较
                     let hash_biguint = BigUint::from_bytes_be(&hash);
-                    
+
                     // 检查是否满足难度要求
                     if hash_biguint < difficulty_biguint_clone {
                         solution_found_clone.store(true, Ordering::SeqCst);
@@ -731,7 +884,7 @@ async fn mine_solution(nonce: U256, address: Address, difficulty: U256, task_id:
                         *solution = Some(guess);
                         return Some(guess);
                     }
-                    
+
                     // 更新进度条，但不要太频繁
                     if i % 10000 == 0 && solution_found_clone.load(Ordering::SeqCst) {
                         return None;
@@ -739,13 +892,13 @@ async fn mine_solution(nonce: U256, address: Address, difficulty: U256, task_id:
                 }
                 None
             });
-            
+
             futures.push(future);
         }
-        
+
         // 等待所有批次完成
         let results = join_all(futures).await;
-        
+
         // 检查是否找到解决方案
         for result in results {
             if let Ok(Some(solution)) = result {
@@ -755,64 +908,74 @@ async fn mine_solution(nonce: U256, address: Address, difficulty: U256, task_id:
                 break;
             }
         }
-        
+
         // 如果已经找到解决方案，退出循环
         if solution_found.load(Ordering::SeqCst) {
             break;
         }
-        
+
         // 更新进度条
         let elapsed = start_time.elapsed().as_secs_f64();
         if elapsed > 0.0 {
             let hashes_per_second = counter as f64 / elapsed;
             let estimated_total_hashes = estimated_hashes.min(1e18); // 限制最大值以避免数值溢出
             let progress_percent = (counter as f64 / estimated_total_hashes * 100.0).min(99.0);
-            
+
             pb.set_position(progress_percent as u64);
-            pb.set_message(format!("{:.2}M 哈希/秒 / {:.2}M hashes/s", hashes_per_second / 1_000_000.0, hashes_per_second / 1_000_000.0));
-            
+            pb.set_message(format!(
+                "{:.2}M 哈希/秒 / {:.2}M hashes/s",
+                hashes_per_second / 1_000_000.0,
+                hashes_per_second / 1_000_000.0
+            ));
+
             // 如果启用了监控，更新任务进度
             if MONITOR_ENABLED.load(Ordering::SeqCst) {
                 MONITOR_DATA.update_task_progress(task_id, progress_percent / 100.0);
             }
         }
-        
+
         // 每隔一段时间调整批处理大小
         if last_update.elapsed().as_secs() >= 5 {
             last_update = Instant::now();
-            
+
             // 调整批处理大小
             let elapsed = start_time.elapsed().as_secs_f64();
             if elapsed > 5.0 {
                 let hashes_per_second = counter as f64 / elapsed;
                 // 每个CPU核心每秒处理的哈希数
                 let hashes_per_cpu_per_second = hashes_per_second / num_cpus as f64;
-                
+
                 // 调整每批次的猜测次数，使每个批次大约运行0.1秒
                 guesses_per_batch = (hashes_per_cpu_per_second * 0.1) as usize;
                 guesses_per_batch = guesses_per_batch.max(10_000).min(1_000_000);
             }
         }
     }
-    
+
     pb.finish_and_clear();
-    
+
     // 获取找到的解决方案
     let solution = solution_value.lock().unwrap();
     match *solution {
         Some(value) => Ok(value),
-        None => Err(anyhow!("任务 #{}: 未找到解决方案 / Task #{}: No solution found", task_id, task_id)),
+        None => Err(anyhow!(
+            "任务 #{}: 未找到解决方案 / Task #{}: No solution found",
+            task_id,
+            task_id
+        )),
     }
 }
 
 async fn handle_mining_error(error: anyhow::Error, retry_count: &mut usize) -> Result<()> {
     eprintln!("{}", format!("挖矿错误 / Mining error: {}", error).red());
-    
+
     *retry_count += 1;
     if *retry_count >= MAX_RETRIES {
-        return Err(anyhow!("达到最大重试次数，程序退出 / Max retries reached, exiting."));
+        return Err(anyhow!(
+            "达到最大重试次数，程序退出 / Max retries reached, exiting."
+        ));
     }
-    
+
     println!(
         "{}",
         format!(
@@ -821,7 +984,7 @@ async fn handle_mining_error(error: anyhow::Error, retry_count: &mut usize) -> R
         )
         .yellow()
     );
-    
+
     sleep(Duration::from_secs(5)).await;
     Ok(())
 }
@@ -830,37 +993,37 @@ async fn handle_mining_error(error: anyhow::Error, retry_count: &mut usize) -> R
 // 特定的solidityPack实现，对应JS版本中的ethers.utils.solidityPack(['uint256', 'address'], [nonce, address])
 fn solidity_pack_uint_address(num: U256, addr: Address) -> Result<Vec<u8>> {
     let mut result = Vec::with_capacity(32 + 20);
-    
+
     // 添加uint256，固定32字节长度
     let mut buffer = [0u8; 32];
     num.to_big_endian(&mut buffer);
     result.extend_from_slice(&buffer);
-    
+
     // 添加address，20字节
     result.extend_from_slice(addr.as_bytes());
-    
+
     Ok(result)
 }
 
 // 特定的solidityPack实现，对应JS版本中的ethers.utils.solidityPack(['bytes', 'uint256'], [prefix, solution])
 fn solidity_pack_bytes_uint(bytes: Vec<u8>, num: U256) -> Result<Vec<u8>> {
     let mut result = Vec::with_capacity(bytes.len() + 32);
-    
+
     // 添加bytes，保持原始长度
     result.extend_from_slice(&bytes);
-    
+
     // 添加uint256，固定32字节长度
     let mut buffer = [0u8; 32];
     num.to_big_endian(&mut buffer);
     result.extend_from_slice(&buffer);
-    
+
     Ok(result)
 }
 
 // 保留原函数，但只用于其他场景
 fn encode_packed(tokens: &[Token]) -> Result<Vec<u8>> {
     let mut result = Vec::new();
-    
+
     for token in tokens {
         match token {
             Token::Address(addr) => {
@@ -869,13 +1032,13 @@ fn encode_packed(tokens: &[Token]) -> Result<Vec<u8>> {
             Token::Uint(value) => {
                 let mut buffer = [0u8; 32];
                 value.to_big_endian(&mut buffer);
-                
+
                 // 跳过前面的零
                 let mut start = 0;
                 while start < 32 && buffer[start] == 0 {
                     start += 1;
                 }
-                
+
                 if start == 32 {
                     // 如果值为0，则添加单个0字节
                     result.push(0);
@@ -892,14 +1055,16 @@ fn encode_packed(tokens: &[Token]) -> Result<Vec<u8>> {
             }
         }
     }
-    
+
     Ok(result)
 }
 
 // 获取下一个nonce值
-async fn get_next_nonce<M: Middleware + 'static>(client: &SignerMiddleware<M, LocalWallet>) -> Result<U256> {
+async fn get_next_nonce<M: Middleware + 'static>(
+    client: &SignerMiddleware<M, LocalWallet>,
+) -> Result<U256> {
     let mut nonce_guard = CURRENT_NONCE.lock().unwrap();
-    
+
     let next_nonce = match *nonce_guard {
         Some(current) => current + 1,
         None => {
@@ -908,22 +1073,27 @@ async fn get_next_nonce<M: Middleware + 'static>(client: &SignerMiddleware<M, Lo
             chain_nonce
         }
     };
-    
+
     // 更新存储的nonce
     *nonce_guard = Some(next_nonce);
-    
+
     Ok(next_nonce)
 }
 
 // 初始化全局nonce
-async fn initialize_nonce<M: Middleware + 'static>(client: &SignerMiddleware<M, LocalWallet>) -> Result<()> {
+async fn initialize_nonce<M: Middleware + 'static>(
+    client: &SignerMiddleware<M, LocalWallet>,
+) -> Result<()> {
     // 仅在尚未初始化时获取nonce
     let mut nonce_guard = CURRENT_NONCE.lock().unwrap();
     if nonce_guard.is_none() {
         // 从链上获取当前nonce
         let chain_nonce = client.get_transaction_count(client.address(), None).await?;
         *nonce_guard = Some(chain_nonce);
-        println!("初始化nonce: {} / Initialized nonce: {}", chain_nonce, chain_nonce);
+        println!(
+            "初始化nonce: {} / Initialized nonce: {}",
+            chain_nonce, chain_nonce
+        );
     }
     Ok(())
 }
@@ -931,7 +1101,7 @@ async fn initialize_nonce<M: Middleware + 'static>(client: &SignerMiddleware<M, 
 // 获取并增加nonce
 fn increment_nonce() -> Result<U256> {
     let mut nonce_guard = CURRENT_NONCE.lock().unwrap();
-    
+
     if let Some(current_nonce) = *nonce_guard {
         let next_nonce = current_nonce + 1;
         *nonce_guard = Some(next_nonce);
@@ -939,4 +1109,4 @@ fn increment_nonce() -> Result<U256> {
     } else {
         Err(anyhow!("Nonce未初始化 / Nonce not initialized"))
     }
-} 
+}
