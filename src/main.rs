@@ -5,24 +5,23 @@ use ethers::{
     abi::Token,
     prelude::*,
     providers::{Http, Provider},
-    utils::keccak256,
 };
-use futures::future::join_all;
 use indicatif::{ProgressBar, ProgressStyle};
-use num_bigint::BigUint;
+use parking_lot::Mutex;
 use std::{
     convert::TryFrom,
-    sync::{
-        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
-        Arc,
-    },
+    sync::{atomic::Ordering, Arc},
     time::{Duration, Instant},
 };
 use tokio::time::sleep;
 
 mod contract;
+mod hash_engine;
+mod memory;
+mod parallel;
 
 use contract::MiningContract;
+use parallel::ParallelMiner;
 
 // 定义常量
 const CONTRACT_ADDRESS: &str = "0x51e0ab7f7db4a2bf4500dfa59f7a4957afc8c02e";
@@ -37,6 +36,16 @@ const MIN_CONTRACT_BALANCE: f64 = 3.0;
 const MINING_TIMEOUT_SECS: u64 = 600; // 10分钟
                                       // MagnetChain的chainId
 const CHAIN_ID: u64 = 114514; // 修正为正确的链ID
+
+// 全局矿工实例
+lazy_static::lazy_static! {
+    static ref GLOBAL_MINER: Mutex<Option<ParallelMiner>> = Mutex::new(None);
+}
+
+#[cfg(target_os = "android")]
+fn is_running_in_termux() -> bool {
+    std::env::var("TERMUX_VERSION").is_ok()
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -95,6 +104,19 @@ async fn main() -> Result<()> {
     // 设置并行任务数
     let parallel_tasks = input_parallel_tasks()?;
 
+    // 初始化全局挖矿实例
+    let thread_count = std::cmp::max(num_cpus::get() + 2, 6); // 使用CPU核心数+2，最少6个线程
+    *GLOBAL_MINER.lock() = Some(ParallelMiner::new(thread_count));
+
+    println!(
+        "{}",
+        format!(
+            "已初始化挖矿引擎：使用{}个线程 / Mining engine initialized: using {} threads",
+            thread_count, thread_count
+        )
+        .green()
+    );
+
     // 开始挖矿循环
     println!("{}", "\n挖矿模式 / Mining Mode:".bold());
     println!(
@@ -104,6 +126,26 @@ async fn main() -> Result<()> {
     println!("{}", "\n开始挖矿 / Starting mining...".bold().green());
 
     start_mining_loop(contract, parallel_tasks).await?;
+
+    #[cfg(target_os = "android")]
+    if is_running_in_termux() {
+        println!("{}", "检测到Termux环境，已启用相应优化".green().bold());
+        // 在Termux环境中，我们可能需要调整线程数以避免过热
+        let cpu_count = num_cpus::get();
+        let suggested_threads = std::cmp::max(1, cpu_count.saturating_sub(1));
+
+        if thread_count > suggested_threads && thread_count == num_cpus::get() {
+            println!(
+                "{}",
+                format!(
+                    "建议: 在Termux环境中，建议使用 {} 个线程以减少发热",
+                    suggested_threads
+                )
+                .yellow()
+                .bold()
+            );
+        }
+    }
 
     Ok(())
 }
@@ -292,16 +334,34 @@ async fn check_contract_balance<M: Middleware + 'static>(
 }
 
 fn input_parallel_tasks() -> Result<usize> {
-    let parallel_tasks: usize = Input::new()
-        .with_prompt(
-            "请输入并行任务数量 (建议: 3-10) / Enter number of parallel tasks (recommended: 3-10)",
+    let cpu_cores = num_cpus::get();
+
+    println!(
+        "{}",
+        format!(
+            "\n系统检测到 {} 个CPU核心 / System detected {} CPU cores",
+            cpu_cores, cpu_cores
         )
-        .default(3)
+        .cyan()
+    );
+
+    // 推荐并行任务数为CPU核心数的75%
+    let recommended = std::cmp::max(1, (cpu_cores as f32 * 0.75) as usize);
+
+    // 优先使用推荐值
+    let default_tasks = recommended;
+
+    let parallel_tasks: usize = Input::new()
+        .with_prompt(format!(
+            "请输入并行挖矿任务数量 (建议: {}) / Enter parallel mining tasks (recommended: {})",
+            recommended, recommended
+        ))
+        .default(default_tasks)
         .validate_with(|input: &usize| -> Result<(), &str> {
-            if *input >= 1 {
+            if *input > 0 && *input <= cpu_cores * 2 {
                 Ok(())
             } else {
-                Err("任务数量必须至少为 1 / Task count must be at least 1")
+                Err("任务数必须大于0且不超过CPU核心数的2倍 / Tasks must be > 0 and <= 2x CPU cores")
             }
         })
         .interact()?;
@@ -309,11 +369,22 @@ fn input_parallel_tasks() -> Result<usize> {
     println!(
         "{}",
         format!(
-            "设置并行任务数量: {} / Set parallel tasks: {}",
+            "设置并行任务数为: {} / Set parallel tasks to: {}",
             parallel_tasks, parallel_tasks
         )
         .green()
     );
+
+    // 确保系统有足够资源
+    if parallel_tasks > cpu_cores {
+        println!(
+            "{}",
+            format!(
+                "警告: 任务数超过CPU核心数，可能导致性能下降 / Warning: Tasks exceed CPU cores, may cause performance degradation",
+            )
+            .yellow()
+        );
+    }
 
     Ok(parallel_tasks)
 }
@@ -754,16 +825,6 @@ async fn mine_solution(
     difficulty: U256,
     task_id: usize,
 ) -> Result<U256> {
-    // 优化1: 增加线程数量，默认CPU核心数，但最少4个线程
-    let num_threads = std::cmp::max(num_cpus::get(), 4);
-    let solution_found = Arc::new(AtomicBool::new(false));
-    let found_solution = Arc::new(AtomicU64::new(0));
-    let total_hashes = Arc::new(AtomicU64::new(0));
-
-    // 优化2: 记录上次找到解决方案的统计信息，用于启发式搜索
-    static LAST_SUCCESSFUL_THREAD: AtomicUsize = AtomicUsize::new(0);
-    static LAST_SOLUTION_RANGE: AtomicU64 = AtomicU64::new(0);
-
     let start_time = Instant::now();
 
     // 设置进度条
@@ -774,147 +835,32 @@ async fn mine_solution(
             .unwrap(),
     );
 
-    // 优化3: 使用更精确的阈值计算
-    let threshold = {
-        let max_u256 = BigUint::from(2u32).pow(256) - BigUint::from(1u32);
-        let diff = BigUint::from(difficulty.as_u128());
-        max_u256 / diff
+    // 获取全局挖矿实例
+    let miner = {
+        let mut miner_guard = GLOBAL_MINER.lock();
+        if let Some(ref mut miner) = *miner_guard {
+            miner.reset(); // 重置状态
+            miner.clone()
+        } else {
+            return Err(anyhow!("挖矿引擎未初始化"));
+        }
     };
 
-    // 预计算编码前缀
-    let prefix = solidity_pack_uint_address(nonce, address)?;
-
-    // 创建多个挖矿任务，考虑之前的成功记录
-    let mut handles = vec![];
-    let last_successful_thread = LAST_SUCCESSFUL_THREAD.load(Ordering::Relaxed);
-    let last_solution_range = LAST_SOLUTION_RANGE.load(Ordering::Relaxed);
-
-    // 预分配缓冲区，提高性能
-    let buffer_size = 32 * 1024; // 32KB预分配缓冲区
-
-    for thread_id in 0..num_threads {
-        let prefix = prefix.clone();
-        let solution_found = solution_found.clone();
-        let found_solution = found_solution.clone();
-        let total_hashes = total_hashes.clone();
-        let threshold = threshold.clone();
-        let pb = pb.clone();
-
-        // 优化4: 启发式搜索策略 - 优先分配给上次成功的线程附近区域
-        let start_solution = if last_solution_range > 0 && thread_id == last_successful_thread {
-            // 成功线程从上次成功位置附近开始
-            let base = last_solution_range.saturating_sub(1000);
-            U256::from(base + (thread_id as u64))
-        } else {
-            // 其他线程正常分布
-            U256::from(thread_id as u64)
-        };
-
-        let handle = tokio::spawn(async move {
-            let mut solution = start_solution;
-            let step = U256::from(num_threads as u64);
-
-            // 优化5: 批处理计算，每次处理多个哈希
-            const BATCH_SIZE: usize = 16;
-            let mut encoded_buffers: Vec<Vec<u8>> = Vec::with_capacity(BATCH_SIZE);
-            let mut solutions: Vec<U256> = Vec::with_capacity(BATCH_SIZE);
-
-            // 预分配缓冲区
-            for _ in 0..BATCH_SIZE {
-                encoded_buffers.push(Vec::with_capacity(buffer_size));
-                solutions.push(U256::zero());
-            }
-
-            // 每10秒显示线程状态
-            let thread_start_time = Instant::now();
-            let thread_hashes = Arc::new(AtomicU64::new(0));
-
-            tokio::spawn({
-                let thread_hashes = thread_hashes.clone();
-                let solution_found = solution_found.clone();
-                async move {
-                    while !solution_found.load(Ordering::Relaxed) {
-                        sleep(Duration::from_secs(10)).await;
-                        if solution_found.load(Ordering::Relaxed) {
-                            break;
-                        }
-
-                        let elapsed = thread_start_time.elapsed().as_secs_f64();
-                        let hashes = thread_hashes.load(Ordering::Relaxed);
-                        let rate = hashes as f64 / elapsed;
-
-                        pb.println(format!(
-                            "任务 #{}: [线程 {}] 哈希速度: {:.2} H/s, 当前位置: {}",
-                            task_id, thread_id, rate, solution
-                        ));
-                    }
-                }
-            });
-
-            while !solution_found.load(Ordering::Relaxed) {
-                // 填充批次
-                for i in 0..BATCH_SIZE {
-                    let current_solution = solution.overflowing_add(U256::from(i)).0;
-                    solutions[i] = current_solution;
-                    encoded_buffers[i].clear();
-
-                    // 复用缓冲区而不是每次重新分配
-                    solidity_pack_bytes_uint_into(
-                        &prefix,
-                        current_solution,
-                        &mut encoded_buffers[i],
-                    )?;
-                }
-
-                // 处理批次
-                for i in 0..BATCH_SIZE {
-                    let hash = keccak256(&encoded_buffers[i]);
-                    thread_hashes.fetch_add(1, Ordering::Relaxed);
-                    total_hashes.fetch_add(1, Ordering::Relaxed);
-
-                    // 检查哈希值是否满足难度要求
-                    let hash_bigint = BigUint::from_bytes_be(hash.as_ref());
-                    if hash_bigint <= threshold {
-                        // 更新成功统计
-                        LAST_SUCCESSFUL_THREAD.store(thread_id, Ordering::Relaxed);
-                        LAST_SOLUTION_RANGE.store(solutions[i].as_u64(), Ordering::Relaxed);
-
-                        solution_found.store(true, Ordering::Relaxed);
-                        found_solution.store(solutions[i].as_u64(), Ordering::Relaxed);
-                        return Ok::<(), anyhow::Error>(());
-                    }
-                }
-
-                // 批量步进
-                solution = solution.overflowing_add(U256::from(BATCH_SIZE)).0;
-                solution = solution
-                    .overflowing_add(step.saturating_mul(U256::from(BATCH_SIZE - 1)))
-                    .0;
-
-                // 每处理一批哈希值让出一次CPU
-                tokio::task::yield_now().await;
-            }
-
-            Ok::<(), anyhow::Error>(())
-        });
-
-        handles.push(handle);
-    }
-
-    // 优化6: 更详细的进度显示
-    let total_hashes_clone = total_hashes.clone();
-    let solution_found_clone = solution_found.clone();
+    // 启动进度显示线程
+    let total_hashes = miner.total_hashes.clone();
+    let solution_found = miner.solution_found.clone();
     let pb_clone = pb.clone();
+
     tokio::spawn(async move {
         let mut last_update = Instant::now();
         let mut last_hash_count = 0;
 
-        while !solution_found_clone.load(Ordering::Relaxed) {
+        while !solution_found.load(Ordering::Relaxed) {
             let now = Instant::now();
             let elapsed_total = start_time.elapsed().as_secs_f64();
             let elapsed_since_update = last_update.elapsed().as_secs_f64();
 
-            let hash_count = total_hashes_clone.load(Ordering::Relaxed);
+            let hash_count = total_hashes.load(Ordering::Relaxed);
             let recent_hashes = hash_count - last_hash_count;
 
             let total_hash_rate = hash_count as f64 / elapsed_total;
@@ -933,20 +879,24 @@ async fn mine_solution(
             last_hash_count = hash_count;
 
             sleep(Duration::from_millis(500)).await;
+
+            // 检查超时条件
+            if elapsed_total > MINING_TIMEOUT_SECS as f64 {
+                break;
+            }
         }
     });
 
-    // 优化7: 等待任务完成时的改进逻辑
-    let result_future = join_all(handles);
+    // 使用高性能并行挖矿器处理
+    let mining_future = tokio::task::spawn_blocking(move || miner.mine(nonce, address, difficulty));
 
-    // 添加超时处理，默认不超过10分钟
-    match tokio::time::timeout(Duration::from_secs(MINING_TIMEOUT_SECS), result_future).await {
-        Ok(_) => {
-            // 正常完成
+    // 添加超时处理
+    match tokio::time::timeout(Duration::from_secs(MINING_TIMEOUT_SECS), mining_future).await {
+        Ok(Ok(result)) => {
+            // 完成挖矿
             pb.finish_and_clear();
 
-            if solution_found.load(Ordering::Relaxed) {
-                let solution = U256::from(found_solution.load(Ordering::Relaxed));
+            if let Some(solution) = result {
                 return Ok(solution);
             }
 
@@ -954,6 +904,18 @@ async fn mine_solution(
                 "任务 #{}: 未找到解决方案 / Task #{}: No solution found",
                 task_id,
                 task_id
+            ))
+        }
+        Ok(Err(e)) => {
+            pb.finish_with_message(format!(
+                "任务 #{}: 挖矿过程发生错误: {} / Task #{}: Mining error: {}",
+                task_id, e, task_id, e
+            ));
+            Err(anyhow!(
+                "任务 #{}: 挖矿错误 / Task #{}: Mining error: {}",
+                task_id,
+                task_id,
+                e
             ))
         }
         Err(_) => {

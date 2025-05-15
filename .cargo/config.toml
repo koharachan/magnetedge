@@ -6,4 +6,18 @@ rustflags = ["-C", "target-feature=+crt-static"]
 rustflags = ["-C", "target-feature=+crt-static"]
 
 [target.x86_64-pc-windows-msvc]
-rustflags = ["-C", "target-feature=+crt-static"] 
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[env]
+RUSTFLAGS = "-C target-cpu=native -C opt-level=3"
+
+[profile.release]
+opt-level = 3
+debug = false
+rpath = false
+lto = true
+debug-assertions = false
+codegen-units = 1
+panic = "abort"
+incremental = false
+overflow-checks = false 

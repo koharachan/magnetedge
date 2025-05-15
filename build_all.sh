@@ -23,6 +23,18 @@ echo "正在构建Linux ARM64版本..."
 cargo build --release --target aarch64-unknown-linux-gnu
 cp target/aarch64-unknown-linux-gnu/release/pow-client ./dist/pow-client-linux-arm64
 
+# 4. 构建Termux ARM64版本
+echo "正在构建Termux ARM64版本..."
+if [ "$(uname -o 2>/dev/null)" = "Android" ] || [ -n "$TERMUX_VERSION" ]; then
+  # 在Termux环境内直接构建
+  cargo build --release
+  cp target/release/pow-client ./dist/pow-client-termux-arm64
+else
+  # 交叉编译
+  cargo build --release --target aarch64-linux-android
+  cp target/aarch64-linux-android/release/pow-client ./dist/pow-client-termux-arm64
+fi
+
 echo "===== 构建完成 ====="
 echo "所有二进制文件已保存到 ./dist 目录"
 ls -la ./dist 

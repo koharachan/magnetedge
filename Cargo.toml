@@ -24,13 +24,38 @@ futures = "0.3"
 rand = "0.8"
 clap = { version = "4.3", features = ["derive"] }
 num_cpus = "1.16"
+rayon = "1.7"
+tiny-keccak = { version = "2.0", features = ["keccak"] }
+parking_lot = "0.12"
+jemallocator = { version = "0.5", optional = true }
+
+[target.'cfg(not(target_os = "windows"))'.dependencies]
+jemallocator = "0.5"
+
+# Termux特定配置
+[target.'cfg(target_os = "android")'.dependencies]
+# 在Termux环境中使用标准系统内存分配器
+# jemallocator可能在Android/Termux上存在兼容性问题
 
 [profile.release]
 opt-level = 3
-lto = true
+lto = "fat"
 codegen-units = 1
 panic = "abort"
 strip = true
+debug = false
+incremental = false
+overflow-checks = false
+
+[profile.release.build-override]
+opt-level = 3
+
+[build]
+rustflags = ["-C", "target-cpu=native"]
+
+# 针对ARM处理器的特定优化
+[target.'cfg(target_arch = "aarch64")'.build]
+rustflags = ["-C", "target-feature=+neon"]
 
 [[bin]]
 name = "pow-client"
