@@ -19,19 +19,18 @@ Magnet POW区块链挖矿客户端的Rust实现，性能更优，资源占用更
 
 ### 直接下载预编译版本
 
-1. 前往[Releases页面](https://github.com/hotianbexuanto/POW-Client-Rust/releases)
+1. 前往[Releases页面](https://github.com/koharachan/magnetedge/releases)
 2. 下载适合您操作系统的最新版本
 3. 解压后直接运行可执行文件
 
 ### 从源码编译
 
 ```bash
-# 克隆仓库
-git clone https://github.com/hotianbexuanto/POW-Client-Rust.git
-cd POW-Client-Rust
+# 克隆仓库并切换目录
+git clone https://github.com/koharachan/magnetedge.git && cd magnetedge
 
-# 编译发布版本
-cargo build --release
+# 编译
+cargo build
 
 # 运行程序
 ./target/release/pow-client
@@ -40,7 +39,7 @@ cargo build --release
 ## 使用说明
 
 1. 启动程序后，选择RPC节点
-2. 输入您的私钥（以0x开头）
+2. 输入您的私钥
 3. 程序会自动检查余额并开始挖矿
 4. 挖矿成功会自动获取奖励
 
@@ -63,11 +62,6 @@ git push origin v0.1.0
 - Linux/macOS: `./build_all.sh`
 - Windows: `build_all.bat`
 
-您也可以手动触发工作流程：
-1. 在GitHub仓库页面点击"Actions"选项卡
-2. 选择"Build and Release"工作流
-3. 点击"Run workflow"按钮
-
 ## 技术说明
 
 - 使用`ethers-rs`库处理区块链交互
@@ -83,7 +77,8 @@ git push origin v0.1.0
 
 ## Telegram群
 
-如需帮助或讨论，请加入Telegram群：https://t.me/MagnetPOW
+如需该代币帮助或讨论，请加入官方Telegram群：[@MagnetPOW](https://t.me/MagnetPOW)
+或 [@koharachans](https://t.me/koharachans)
 
 ## 许可证
 
