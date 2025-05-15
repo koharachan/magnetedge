@@ -39,7 +39,7 @@ const MIN_CONTRACT_BALANCE: f64 = 3.0;
 const MAX_RETRIES: usize = 5;
 const MINING_TIMEOUT_SECS: u64 = 600; // 10分钟
                                       // 并行任务数
-const PARALLEL_TASKS: usize = 3; // 同时处理的任务数量
+const PARALLEL_TASKS: usize = 6; // 同时处理的任务数量
                                  // MagnetChain的chainId
 const CHAIN_ID: u64 = 114514; // 修正为正确的链ID
 
@@ -64,12 +64,12 @@ async fn main() -> Result<()> {
     }
 
     if monitor_mode {
-        // 启动监控模式
+        // 启动监控
         MONITOR_ENABLED.store(true, Ordering::SeqCst);
         let monitor_data = start_monitor();
         std::mem::forget(monitor_data); // 防止数据被释放
 
-        // 循环等待用户输入退出命令
+        // 等待用户输入退出命令
         println!("已进入监控模式，按 'exit' 退出");
         loop {
             let mut input = String::new();
@@ -1020,7 +1020,7 @@ fn solidity_pack_bytes_uint(bytes: Vec<u8>, num: U256) -> Result<Vec<u8>> {
     Ok(result)
 }
 
-// 保留原函数，但只用于其他场景
+#[allow(dead_code)]
 fn encode_packed(tokens: &[Token]) -> Result<Vec<u8>> {
     let mut result = Vec::new();
 
@@ -1121,14 +1121,3 @@ async fn initialize_nonce<M: Middleware + 'static>(
 }
 
 // 获取并增加nonce
-fn increment_nonce() -> Result<U256> {
-    let mut nonce_guard = CURRENT_NONCE.lock().unwrap();
-
-    if let Some(current_nonce) = *nonce_guard {
-        let next_nonce = current_nonce + 1;
-        *nonce_guard = Some(next_nonce);
-        Ok(next_nonce)
-    } else {
-        Err(anyhow!("Nonce未初始化 / Nonce not initialized"))
-    }
-}
